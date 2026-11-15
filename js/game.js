@@ -31,7 +31,8 @@
   camera.rotation.order = 'YXZ';
   scene.add(camera);
 
-  scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x9a7448, 1.1));
+  scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x9a7448, 0.55));
+  let envTex = null;
   const sun = new THREE.DirectionalLight(0xffe3b8, 2.6);
   sun.position.set(40, 60, 25);
   scene.add(sun, sun.target);
@@ -169,6 +170,13 @@
     const sky = new THREE.Mesh(new THREE.SphereGeometry(500, 32, 16), skyMat);
     sky.renderOrder = -1;
     scene.add(sky);
+    // 用天空生成环境光照，让金属和布料看起来更真实
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envScene = new THREE.Scene();
+    envScene.add(new THREE.Mesh(sky.geometry, skyMat));
+    const ground2 = new THREE.Mesh(new THREE.CircleGeometry(400, 24), new THREE.MeshBasicMaterial({ color: 0xb08a5a })); ground2.rotation.x = -Math.PI / 2; ground2.position.y = -2; envScene.add(ground2);
+    envTex = pmrem.fromScene(envScene, 0.03).texture;
+    scene.environment = envTex;
     // 云
     const cloudMat = new THREE.SpriteMaterial({ map: glowTex, color: 0xfff4e6, transparent: true, opacity: 0.55, depthWrite: false, fog: false });
     for (let i = 0; i < 22; i++) {
@@ -179,24 +187,40 @@
       scene.add(cl);
     }
   }
-  // 远处的山
-  {
-    const mMats = [0xa47c55, 0x8f6c4a, 0xb8916a].map(c => new THREE.MeshStandardMaterial({ color: c, flatShading: true, roughness: 1 }));
-    for (let i = 0; i < 34; i++) {
-      const a = i / 34 * Math.PI * 2 + rand(-0.05, 0.05), r = rand(170, 230);
-      const hgt = rand(25, 70);
-      const m = new THREE.Mesh(new THREE.ConeGeometry(rand(30, 55), hgt, 5 + Math.floor(Math.random() * 3)), mMats[i % 3]);
-      m.position.set(Math.cos(a) * r, hgt / 2 - 3, Math.sin(a) * r);
-      m.rotation.y = Math.random() * 3;
-      scene.add(m);
+  // 地面 + 远处起伏的沙丘和石头山（同一块地形）
+  const ground = (() => {
+    const hash = (x, y) => { const h = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return h - Math.floor(h); };
+    const noise = (x, y) => {
+      const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+      const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+      const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
+      return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+    };
+    const fbm = (x, y) => { let s = 0, a = 0.5, f = 1; for (let k = 0; k < 5; k++) { s += a * noise(x * f, y * f); a *= 0.5; f *= 2.03; } return s; };
+    const geo = new THREE.PlaneGeometry(760, 760, 190, 190);
+    geo.rotateX(-Math.PI / 2);
+    const pos = geo.attributes.position, cols = new Float32Array(pos.count * 3);
+    const sand = new THREE.Color(0xffffff), rock = new THREE.Color(0x9a7a5c), dark = new THREE.Color(0x7d644c);
+    const c = new THREE.Color();
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), z = pos.getZ(i);
+      const r = Math.max(Math.abs(x), Math.abs(z)) * 0.55 + Math.hypot(x, z) * 0.45;
+      const dune = THREE.MathUtils.smoothstep(r, 62, 110) * (fbm(x * 0.02, z * 0.02) * 9);
+      const mount = THREE.MathUtils.smoothstep(r, 130, 240) * (Math.pow(fbm(x * 0.008 + 5, z * 0.008), 1.6) * 150 + 8);
+      const h = dune + mount;
+      pos.setY(i, h);
+      const rk = THREE.MathUtils.smoothstep(h, 18, 55);
+      c.copy(sand).lerp(rock, rk).lerp(dark, rk * fbm(x * 0.05, z * 0.05) * 0.6);
+      cols[i * 3] = c.r; cols[i * 3 + 1] = c.g; cols[i * 3 + 2] = c.b;
     }
-  }
-
-  // ---------- 地面 ----------
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshStandardMaterial({ map: sandTex, roughness: 1 }));
-  ground.rotation.x = -Math.PI / 2;
-  ground.receiveShadow = true;
-  scene.add(ground);
+    geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    geo.computeVertexNormals();
+    const t = sandTex.clone(); t.needsUpdate = true; t.repeat.set(88, 88);
+    const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: t, vertexColors: true, roughness: 1 }));
+    m.receiveShadow = true;
+    scene.add(m);
+    return m;
+  })();
   {
     const roadMat = new THREE.MeshStandardMaterial({ map: roadTex, roughness: 0.95 });
     const r1 = new THREE.Mesh(new THREE.PlaneGeometry(6, 90), roadMat);
@@ -655,7 +679,8 @@
   // ================= 手里的枪（单独一层画，不会插进墙里） =================
   const gunScene = new THREE.Scene();
   const gunCam = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 10);
-  gunScene.add(new THREE.HemisphereLight(0xe8eeff, 0x6a5030, 1.3));
+  gunScene.add(new THREE.HemisphereLight(0xe8eeff, 0x6a5030, 0.8));
+  gunScene.environment = envTex;
   const gunSun = new THREE.DirectionalLight(0xffe3b8, 2.2); gunSun.position.set(1, 2, 1.5); gunScene.add(gunSun);
   const gunFlashLight = new THREE.PointLight(0xffb050, 0, 3, 2); gunFlashLight.position.set(0.1, -0.05, -0.9); gunScene.add(gunFlashLight);
   const M = {
@@ -668,7 +693,7 @@
     lens: new THREE.MeshStandardMaterial({ color: 0x5fb4ff, emissive: 0x1a5fa0, emissiveIntensity: 0.6, roughness: 0.1, metalness: 0.5 }),
     red: new THREE.MeshBasicMaterial({ color: 0xff3030, toneMapped: false }),
     glove: new THREE.MeshStandardMaterial({ color: 0x3b3428, roughness: 0.9 }),
-    sleeve: new THREE.MeshStandardMaterial({ color: 0x2f5fbf, roughness: 0.9 }),
+    sleeve: new THREE.MeshStandardMaterial({ map: Humans.CAMO.ally, normalMap: Humans.fabricNormal, roughness: 0.92 }),
   };
   function part(g, geo, mat, x, y, z, rx, ry, rz) {
     const m = new THREE.Mesh(geo, mat);
@@ -679,11 +704,11 @@
   }
   const B = (w, h, d) => new THREE.BoxGeometry(w, h, d);
   const CYL = (r, l, seg) => { const g = new THREE.CylinderGeometry(r, r, l, seg || 14); g.rotateX(Math.PI / 2); return g; };
+  const SLV = (() => { const g = new THREE.CapsuleGeometry(0.048, 0.36, 4, 12); g.rotateX(Math.PI / 2); return g; })();
   function addHands(g, gripZ, foreZ, foreY) {
     part(g, B(0.075, 0.075, 0.1), M.glove, 0.0, -0.1, gripZ);
-    part(g, B(0.085, 0.09, 0.4), M.sleeve, 0.02, -0.17, gripZ + 0.22, -0.35);
+    part(g, SLV, M.sleeve, 0.02, -0.17, gripZ + 0.22, -0.35);
     part(g, B(0.08, 0.06, 0.12), M.glove, -0.03, foreY, foreZ);
-    part(g, B(0.08, 0.085, 0.45), M.sleeve, -0.14, foreY - 0.12, foreZ + 0.24, -0.4, -0.5);
   }
   function makeRifle() {
     const g = new THREE.Group();
@@ -741,7 +766,7 @@
     part(g, B(0.03, 0.08, 0.06), M.black, -0.09, 0.07, -0.18);
     part(g, B(0.025, 0.02, 0.025), M.red, -0.09, 0.115, -0.18);
     part(g, B(0.075, 0.075, 0.1), M.glove, 0, -0.18, 0.02);
-    part(g, B(0.085, 0.09, 0.4), M.sleeve, 0.02, -0.24, 0.24, -0.35);
+    part(g, SLV, M.sleeve, 0.02, -0.24, 0.24, -0.35);
     return { g, muzzle: new THREE.Vector3(0, 0, -0.8), sightY: 0.115, kick: 0.15, head };
   }
   const WEAPONS = [
@@ -794,95 +819,7 @@
     parent.add(m);
     return m;
   }
-  // kind: grunt | runner | heavy | boss | ally
-  function makeSoldier(kind) {
-    const g = new THREE.Group();
-    const P = {
-      grunt: { uni: 0x7a2e2a, pants: 0x3d2b2b, vest: 0x3a3a3a, helmet: 0x2e2e2e },
-      runner: { uni: 0xc8641e, pants: 0x4a3322, vest: null, helmet: null },
-      heavy: { uni: 0x3b3f46, pants: 0x2a2d33, vest: 0x1f2226, helmet: 0x1d1f22 },
-      boss: { uni: 0x5c1f1f, pants: 0x2b1a1a, vest: null, helmet: null },
-      ally: { uni: 0x2f6bd8, pants: 0x27467a, vest: 0xb89b6a, helmet: 0x56682f },
-    }[kind];
-    const uni = new THREE.MeshStandardMaterial({ color: P.uni, roughness: 0.8 });
-    const flashMats = [uni];
-    const v = { g, uni, flashMats, legs: [], arms: [], baseColor: P.uni };
-    const pants = new THREE.MeshStandardMaterial({ color: P.pants, roughness: 0.85 });
-    flashMats.push(pants);
-    for (const sx of [-1, 1]) {
-      const hip = new THREE.Group(); hip.position.set(sx * 0.17, 0.92, 0);
-      add(hip, SG.leg, pants, 0, -0.45, 0);
-      add(hip, SG.boot, SM.boot, 0, -0.86, 0.05);
-      g.add(hip); v.legs.push(hip);
-    }
-    add(g, SG.torso, uni, 0, 1.33, 0);
-    add(g, SG.belt, SM.dark, 0, 0.96, 0);
-    if (P.vest) {
-      const vm = new THREE.MeshStandardMaterial({ color: P.vest, roughness: 0.85 });
-      flashMats.push(vm);
-      const vest = add(g, SG.vest, vm, 0, 1.43, 0);
-      if (kind === 'heavy') vest.scale.set(1.12, 1.25, 1.15);
-      for (const px of [-0.2, 0, 0.2]) add(g, SG.pouch, vm, px, 1.2, 0.28);
-    }
-    const villain = kind !== 'ally';
-    // 头
-    const headMat = kind === 'ally' ? SM.skin : kind === 'boss' ? SM.villainSkin : SM.dark; // 坏蛋小兵戴黑色头套
-    add(g, SG.head, headMat, 0, 2.02, 0);
-    if (kind === 'ally') {
-      add(g, SG.visor, SM.visor, 0, 2.08, 0.25);
-      add(g, SG.mouth, SM.dark, 0, 1.88, 0.255);
-      add(g, SG.pack, SM.olive, 0, 1.4, -0.36);
-    } else {
-      for (const sx of [-1, 1]) {
-        if (kind === 'boss') {
-          add(g, SG.glasses, SM.pupil, sx * 0.12, 2.07, 0.26);
-          const b = add(g, SG.brow, SM.pupil, sx * 0.12, 2.17, 0.27); b.rotation.z = sx * 0.45;
-        } else if (kind === 'heavy') {
-          // 重甲兵用一条橙色护目镜
-        } else {
-          const e = add(g, SG.eye, SM.white, sx * 0.11, 2.05, 0.24); e.scale.set(1.2, 1, 0.8);
-          add(e, SG.pupil, SM.pupil, -sx * 0.01, -0.01, 0.07);
-          const b = add(g, SG.brow, SM.angry, sx * 0.11, 2.15, 0.26); b.rotation.z = sx * 0.5;
-        }
-      }
-      if (kind === 'heavy') add(g, SG.visor, SM.hvisor, 0, 2.06, 0.26);
-      if (kind === 'boss') { add(g, SG.stache, SM.pupil, 0, 1.92, 0.27); }
-      if (kind !== 'boss' && kind !== 'heavy') { const mo = add(g, SG.mouth, SM.white, 0, 1.88, 0.255); mo.rotation.z = 0.15; }
-    }
-    if (P.helmet) {
-      const hm = new THREE.MeshStandardMaterial({ color: P.helmet, roughness: 0.6 });
-      flashMats.push(hm);
-      const h = add(g, SG.helmet, hm, 0, 2.2, 0); h.scale.set(1.05, 0.9, 1.05);
-      if (kind === 'heavy') h.scale.set(1.2, 1.05, 1.2);
-    }
-    if (kind === 'runner') add(g, SG.band, SM.red, 0, 2.2, 0);
-    if (kind === 'boss') {
-      const b = add(g, SG.beret, SM.beret, 0.04, 2.33, 0); b.rotation.z = -0.18;
-      add(g, SG.epaulette, SM.gold, -0.42, 1.76, 0); add(g, SG.epaulette, SM.gold, 0.42, 1.76, 0);
-      for (let i = 0; i < 3; i++) { const m = add(g, SG.medal, SM.gold, -0.18 + i * 0.12, 1.5, 0.23); m.rotation.x = Math.PI / 2; }
-    }
-    // 手臂
-    const armMat = kind === 'heavy' ? flashMats[2] || uni : uni;
-    for (const sx of [-1, 1]) {
-      const sh = new THREE.Group(); sh.position.set(sx * 0.47, 1.68, 0);
-      add(sh, SG.arm, armMat, 0, -0.3, 0);
-      if (villain && sx < 0 && kind !== 'boss') add(sh, SG.armband, SM.red, 0, -0.12, 0);
-      g.add(sh); v.arms.push(sh);
-    }
-    if (kind !== 'runner') {
-      const hand = new THREE.Group(); hand.position.set(0, -0.62, 0); hand.rotation.x = 1.35;
-      add(hand, SG.gun, SM.gun, 0, 0.02, 0.22);
-      add(hand, SG.gunMag, SM.gun, 0, -0.12, 0.2);
-      if (kind === 'heavy') hand.scale.set(1.5, 1.5, 1.3);
-      v.arms[1].add(hand);
-      v.arms[1].rotation.x = -1.35;
-      v.arms[0].rotation.set(-1.2, 0, 0.4);
-      v.armed = true;
-      v.hand = hand;
-    }
-    shadowify(g);
-    return v;
-  }
+  function makeSoldier(kind) { return Humans.make(kind); }
   function makeDrone() {
     const g = new THREE.Group();
     const body = new THREE.Group(); g.add(body);
@@ -902,15 +839,15 @@
     eye.add(glowSprite(0xff3030, 1.2, 0.7));
     add(body, B(0.1, 0.1, 0.5), SM.gun, 0, -0.24, 0.2);
     shadowify(g);
-    return { g, body, rotors, uni: mat, flashMats: [mat], legs: [], arms: [], baseColor: 0x4a4f55 };
+    return { g, body, rotors, uni: mat, flashMats: [mat], baseColor: 0x4a4f55, drone: true };
   }
 
   const ETYPES = {
     grunt:  { name: '坏蛋步兵', hp: 4, speed: 3.4, scale: 1, score: 10, xp: 1, dmg: 7, shoot: [1.8, 3.2], keep: 14, bullet: 21 },
-    runner: { name: '坏蛋突击兵', hp: 3, speed: 6.8, scale: 0.95, score: 15, xp: 1, dmg: 12 },
+    runner: { name: '坏蛋突击兵', hp: 3, speed: 6.8, scale: 1, score: 15, xp: 1, dmg: 12 },
     drone:  { name: '侦察无人机', hp: 3, speed: 5, scale: 1, score: 20, xp: 2, dmg: 6, shoot: [1.8, 3], keep: 13, drone: true, bullet: 20 },
-    heavy:  { name: '重甲兵', hp: 24, speed: 2.2, scale: 1.35, score: 50, xp: 4, dmg: 6, shoot: [2.6, 3.6], keep: 11, burst: 4, bullet: 20 },
-    boss:   { name: '坏蛋司令', hp: 420, speed: 2.4, scale: 2.2, score: 1000, xp: 20, dmg: 10, shoot: [2.0, 2.6], keep: 12, boss: true, bullet: 16 },
+    heavy:  { name: '重甲兵', hp: 24, speed: 2.2, scale: 1.12, score: 50, xp: 4, dmg: 6, shoot: [2.6, 3.6], keep: 11, burst: 4, bullet: 20 },
+    boss:   { name: '坏蛋司令', hp: 420, speed: 2.4, scale: 1.5, score: 1000, xp: 20, dmg: 10, shoot: [2.0, 2.6], keep: 12, boss: true, bullet: 16 },
   };
 
   // ================= 游戏数据 =================
@@ -1005,11 +942,10 @@
   function hitSpheres(e) {
     const p = e.g.position, s = e.s;
     if (e.T.drone) return [[p.x, p.y, p.z, 0.85 * s, false]];
-    return [[p.x, p.y + 1.33 * s, p.z, 0.55 * s, false], [p.x, p.y + 0.55 * s, p.z, 0.42 * s, false], [p.x, p.y + 2.06 * s, p.z, 0.38 * s, true]];
+    return [[p.x, p.y + 1.28 * s, p.z, 0.34 * s, false], [p.x, p.y + 0.62 * s, p.z, 0.3 * s, false], [p.x, p.y + 1.73 * s, p.z, 0.17 * s, true]];
   }
-  function removeEnemy(e) {
-    scene.remove(e.g);
-    e.v.flashMats.forEach(m => m.dispose());
+  function removeEnemy(e, keepMesh) {
+    if (!keepMesh) { scene.remove(e.g); e.v.flashMats.forEach(m => m.dispose()); }
     const i = enemies.indexOf(e);
     if (i >= 0) enemies.splice(i, 1);
     if (e === boss) { boss = null; $('bossbox').classList.add('hidden'); }
@@ -1046,15 +982,11 @@
       }, i * 170);
       screenFlash('#fff', 0.8);
       shake = 1.5;
-      puff(center, 10, 4, 0xffffff, 2);
     } else if (e.T.drone) {
       explode(center, 1, true);
       Sfx.boom(false);
     } else {
-      // 不血腥：坏蛋“噗”地变成一团烟和星星
-      puff(center, 6, 1.8 * e.s, 0xffffff, 1.1);
-      emit(center, 0xffe15a, 16, 6, 0.9, 4);
-      spawnShards(center, e.v.baseColor, 6, e.s);
+      emit(center, 0xffe15a, 10, 4, 0.6, 3);
       Sfx.hit();
     }
     if ([5, 10, 15, 20, 30].includes(combo)) centerText(`${combo} 连杀！`, '#ff8a1f', 52);
@@ -1064,7 +996,32 @@
       if (roll < 0.08) spawnPickup('ammo', center);
       else if (roll < 0.15) spawnPickup('medkit', center);
     }
-    removeEnemy(e);
+    if (e.T.drone) { removeEnemy(e); return; }
+    // 不血腥：坏蛋向后倒下，然后“噗”地变成一团烟消失
+    removeEnemy(e, true);
+    e.g.rotation.order = 'YXZ';
+    corpses.push({ e, t: 0, dir: Math.random() < 0.5 ? 1 : -1 });
+  }
+  let corpses = [];
+  function updateCorpses(dt) {
+    for (let i = corpses.length - 1; i >= 0; i--) {
+      const c = corpses[i], g = c.e.g;
+      c.t += dt;
+      const k = Math.min(1, c.t / 0.5);
+      const fall = k < 1 ? k * k : 1;
+      g.rotation.x = -Math.PI / 2 * 0.96 * fall;
+      g.rotation.z = c.dir * 0.15 * fall;
+      if (c.t > 0.5 && !c.landed) { c.landed = true; puff(tmpV.copy(g.position).setY(0.3), 3, 1.2 * c.e.s, 0xd6c3a0, 0.9); }
+      if (c.t > (c.e.T.boss ? 2.6 : 1.3)) {
+        const back = tmpV.set(-Math.sin(g.rotation.y), 0, -Math.cos(g.rotation.y));
+        const p = tmpV2.copy(g.position).addScaledVector(back, 0.9 * c.e.s).setY(0.5);
+        puff(p, 6, 1.6 * c.e.s, 0xffffff, 1);
+        emit(p, 0xffe15a, 10, 4, 0.6, 3);
+        scene.remove(g);
+        c.e.v.flashMats.forEach(m => m.dispose());
+        corpses.splice(i, 1);
+      }
+    }
   }
 
   // ---------- 敌人的子弹（发光的橙色曳光弹） ----------
@@ -1533,10 +1490,7 @@
     const top = new THREE.Mesh(B(2.5, 0.12, 2.5), barMat); top.position.y = 2.4; bars.add(top);
     const base = new THREE.Mesh(B(2.5, 0.12, 2.5), barMat); base.position.y = 0.06; bars.add(base);
     g.add(bars);
-    const hostage = makeSoldier('ally');
-    hostage.g.position.y = -0.35;
-    hostage.legs.forEach(l => { l.rotation.x = -1.4; });
-    hostage.arms.forEach(a => { a.rotation.set(-2.6, 0, 0); });
+    const hostage = makeSoldier('hostage');
     g.add(hostage.g);
     shadowify(g);
     const ob = addOb(x, z, 2.5, 2.5, 2.45, g, 'cage');
@@ -1727,6 +1681,7 @@
   function clearWorld() {
     while (allies.length) removeAlly(0);
     while (enemies.length) removeEnemy(enemies[0]);
+    corpses.forEach(c => { scene.remove(c.e.g); c.e.v.flashMats.forEach(m => m.dispose()); }); corpses = [];
     while (pickups.length) removePickup(0);
     for (const o of ebullets) { o.alive = false; o.mesh.visible = false; }
     for (const g of grenades) { g.alive = false; g.mesh.visible = false; }
@@ -2209,11 +2164,6 @@
     }
     return bestE;
   }
-  function animateLegs(v, walk, amp, armed) {
-    v.legs[0].rotation.x = Math.sin(walk) * amp;
-    v.legs[1].rotation.x = -Math.sin(walk) * amp;
-    if (!armed) { v.arms[0].rotation.x = -Math.sin(walk) * amp * 0.9; v.arms[1].rotation.x = Math.sin(walk) * amp * 0.9; }
-  }
   function faceTo(g, yaw, k) {
     let diff = yaw - g.rotation.y;
     while (diff > Math.PI) diff -= Math.PI * 2;
@@ -2230,7 +2180,7 @@
       const a = allies[i], g = a.g, v = a.v;
       if (state === 'title') {
         g.rotation.y = Math.PI + Math.sin(t * 0.7 + a.phase) * 0.25;
-        v.legs.forEach(l => { l.rotation.x = 0; });
+        Humans.animate(v, dt, 0);
         continue;
       }
       const slot = SLOTS[i % SLOTS.length];
@@ -2251,7 +2201,7 @@
       if (combat && a.tgtT <= 0) { a.tgtT = 0.5; a.tgt = nearestEnemy(g.position, 30, true); }
       const face = target ? Math.atan2(target.g.position.x - g.position.x, target.g.position.z - g.position.z) : (sp > 0.5 ? Math.atan2(dx, dz) : Math.atan2(-fwd.x, -fwd.z) + Math.PI);
       faceTo(g, face, Math.min(1, dt * 8));
-      animateLegs(v, t * 9 + a.phase, sp > 0.5 ? 0.6 : 0, true);
+      Humans.animate(v, dt, sp > 0.4 ? sp : 0);
       flashUpdate(v, dt);
       if (a.hurtT > 0) a.hurtT -= dt; else if (a.hp < a.maxHp) a.hp = Math.min(a.maxHp, a.hp + 3 * dt);
       if (!combat) continue;
@@ -2277,7 +2227,7 @@
       if (e.idle) {
         g.rotation.y = Math.atan2(camera.position.x - g.position.x, camera.position.z - g.position.z);
         if (e.T.drone) { g.position.y = 4 + Math.sin(t * 2 + e.phase) * 0.3; v.rotors.forEach(r => { r.rotation.y += dt * 30; }); }
-        else { g.position.y = Math.abs(Math.sin(t * 2 + e.phase)) * 0.12; }
+        else Humans.animate(v, dt, 0);
         continue;
       }
       if (e.spawnIn > 0) {
@@ -2324,14 +2274,12 @@
       g.position.x = clamp(g.position.x, -LIM, LIM); g.position.z = clamp(g.position.z, -LIM, LIM);
       faceTo(g, Math.atan2(dx, dz), Math.min(1, dt * 10));
 
-      const walk = t * Math.max(2, spd) * 2.2 + e.phase;
       if (e.T.drone) {
         g.position.y = 4.2 + Math.sin(t * 2.5 + e.phase) * 0.4;
         v.rotors.forEach(r => { r.rotation.y += dt * 40; });
         v.body.rotation.x = mvz * 0.1 * Math.sign(spd);
       } else {
-        animateLegs(v, walk, spd > 0 ? 0.7 : 0.05, v.armed);
-        g.position.y = Math.abs(Math.sin(walk)) * 0.06 * e.s;
+        Humans.animate(v, dt, spd > 0 ? Math.hypot(mvx, mvz) * spd : 0);
       }
       flashUpdate(v, dt);
 
@@ -2496,9 +2444,9 @@
         else list.push([o.x, 6, o.z, o.planted ? '💣' : '📡', o.planted ? '快跑开！' : '安放炸药']);
       }
       if (mst.phase === 'extract') list.push([PAD.x, heli.g.visible ? heli.g.position.y + 5 : 5, PAD.z, '🚁', '撤离点']);
-      if (boss) list.push([boss.g.position.x, boss.g.position.y + 5.8, boss.g.position.z, '👑', '坏蛋司令']);
+      if (boss) list.push([boss.g.position.x, boss.g.position.y + 2.25 * boss.s + 0.4, boss.g.position.z, '👑', '坏蛋司令']);
       if (mission.type === 'kill' && mst.phase === 'fight' && mission.total - missionKills <= 3) {
-        for (const e of enemies) if (!e.idle && e.spawnIn <= 0) list.push([e.g.position.x, e.g.position.y + (e.T.drone ? 1.5 : 2.9 * e.s), e.g.position.z, '🎯', '']);
+        for (const e of enemies) if (!e.idle && e.spawnIn <= 0) list.push([e.g.position.x, e.g.position.y + (e.T.drone ? 1.5 : 2.25 * e.s), e.g.position.z, '🎯', '']);
       }
     }
     for (let i = 0; i < Math.max(list.length, markerPool.length); i++) {
@@ -2651,6 +2599,7 @@
       updateGrenades(dt);
       updateRockets(dt);
       updatePickups(dt);
+      updateCorpses(dt);
       updateHeli(dt);
       if (state === 'playing' && pendingLevels > 0) doLevelUp();
     }
