@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>三角形部队</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="game"></div>
+<div id="flash"></div>
+<div id="floaters"></div>
+
+<!-- 游戏中的信息栏 -->
+<div id="hud" class="hidden">
+  <div class="hud-left">
+    <div class="score">分数 <b id="score">0</b></div>
+    <div class="wave">第 <b id="wave">1</b> 波</div>
+    <div class="hp"><div class="hp-label">🛡️ 指挥官</div><div class="bar"><i id="hpbar"></i></div></div>
+  </div>
+  <div class="hud-center">
+    <div class="lvl">等级 <b id="level">1</b></div>
+    <div class="bar xp"><i id="xpbar"></i></div>
+    <div id="bossbox" class="hidden"><div class="boss-name" id="bossname">BOSS</div><div class="bar boss"><i id="bossbar"></i></div></div>
+  </div>
+  <div class="hud-right">
+    <div class="troops">🔺 部队 <b id="troops">0</b> 人</div>
+    <div id="learnBadge" class="badge">📚 学习模式 开</div>
+    <button id="pauseBtn" class="icon-btn" title="暂停 (P)">⏸</button>
+  </div>
+  <button id="superBtn" class="super"><span class="super-fill" id="superFill"></span><span class="super-text" id="superText">⚡ 超级冲击波 充能中</span></button>
+  <div id="joyBase" class="hidden"><div id="joyKnob"></div></div>
+</div>
+
+<!-- 大字横幅 -->
+<div id="banner" class="hidden"><div class="b-main"></div><div class="b-sub"></div></div>
+
+<!-- 开始界面 -->
+<div id="title" class="screen">
+  <div class="title-box">
+    <div class="logo">
+      <span class="t1">三角形</span><span class="t2">部队</span>
+    </div>
+    <div class="slogan">TRIANGLE SQUAD · 招募士兵，打败方块怪兽军团！</div>
+    <button class="btn huge" id="startBtn">▶ 开始战斗！</button>
+    <div class="row">
+      <button class="btn toggle" id="learnToggle">📚 学习模式：开</button>
+      <button class="btn" id="bookBtn">📖 单词本</button>
+      <button class="btn toggle" id="soundToggle">🔊 音效：开</button>
+      <button class="btn toggle" id="musicToggle">🎵 音乐：开</button>
+    </div>
+    <div class="learn-tip" id="learnTip"></div>
+    <div class="howto">
+      <div><b>移动</b> WASD / 方向键 · 平板：手指拖动</div>
+      <div><b>射击</b> 全自动！靠近怪兽就会开火</div>
+      <div><b>超级冲击波</b> 空格键 / 点⚡按钮</div>
+      <div><b>招募</b> 碰到 <span class="g">绿色三角</span> 就能加入你的部队</div>
+      <div><b>暂停</b> P 或 Esc</div>
+    </div>
+    <div class="best">最高分：<b id="bestScore">0</b></div>
+  </div>
+</div>
+
+<!-- 暂停 -->
+<div id="pause" class="screen hidden">
+  <div class="panel">
+    <h2>⏸ 暂停</h2>
+    <button class="btn big" id="resumeBtn">▶ 继续</button>
+    <button class="btn toggle" id="learnToggle2">📚 学习模式：开</button>
+    <button class="btn toggle" id="soundToggle2">🔊 音效：开</button>
+    <button class="btn toggle" id="musicToggle2">🎵 音乐：开</button>
+    <button class="btn" id="quitBtn">🏠 回到主页</button>
+  </div>
+</div>
+
+<!-- 升级选择 -->
+<div id="upgrade" class="screen hidden">
+  <div class="panel wide">
+    <h2>⬆️ 升级啦！选一个能力</h2>
+    <div class="cards" id="upgradeCards"></div>
+  </div>
+</div>
+
+<!-- 单词测验 -->
+<div id="quiz" class="screen hidden">
+  <div class="panel quiz-panel">
+    <div class="q-title"></div>
+    <div class="q-sub"></div>
+    <div class="q-progress"></div>
+    <div class="q-body"></div>
+    <button class="btn small q-cancel hidden"></button>
+  </div>
+</div>
+
+<!-- 单词本 -->
+<div id="book" class="screen hidden">
+  <div class="panel wide">
+    <h2>📖 我的单词本</h2>
+    <div class="book-stats" id="bookStats"></div>
+    <div class="book-grid" id="bookGrid"></div>
+    <button class="btn big" id="bookClose">关闭</button>
+  </div>
+</div>
+
+<!-- 游戏结束 -->
+<div id="over" class="screen hidden">
+  <div class="panel">
+    <h2 id="overTitle">💥 部队被打败了</h2>
+    <div class="over-stats" id="overStats"></div>
+    <button class="btn huge" id="againBtn">🔁 再来一局</button>
+    <button class="btn" id="homeBtn">🏠 回到主页</button>
+  </div>
+</div>
+
+<script src="lib/three.min.js"></script>
+<script src="js/words.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/learn.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
