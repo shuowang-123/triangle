@@ -320,5 +320,5 @@ window.Humans = (function () {
       }
     }
   }
-  return { make, animate, CAMO, fabricNormal, MAT };
+  return { make, animate, CAMO, fabricNormal, MAT, npcRifle };
 })();

@@ -2670,5 +2670,7 @@
   };
 
   toTitle();
+  // 真人模型解码完以后，把开始界面的人物换成真人模型
+  if (Humans.onReady) Humans.onReady(() => { if (state === 'title') toTitle(); });
   requestAnimationFrame(frame);
 })();
