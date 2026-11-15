@@ -64,6 +64,7 @@ html, body {
   display: inline-grid; grid-template-columns: 1fr 1fr; gap: 6px 22px; text-align: left; font-size: 16px;
   background: rgba(0, 0, 0, .45); border: 1px solid rgba(126, 249, 255, .4); border-radius: 14px; padding: 12px 18px; color: #dde;
 }
+.howto .wide { grid-column: 1 / -1; }
 .howto b { color: #7ef9ff; margin-right: 6px; }
 .howto .g { color: #5dff8a; font-weight: 800; }
 .best { margin-top: 12px; color: #ffe15a; font-size: 18px; }
@@ -74,7 +75,7 @@ html, body {
 .hud-left, .hud-right, .hud-center { position: absolute; top: 12px; font-weight: 800; text-shadow: 0 0 6px #000, 0 0 10px rgba(0, 0, 0, .8); }
 .hud-left { left: 16px; font-size: 22px; }
 .hud-left b { color: #ffe15a; font-size: 28px; }
-.hud-right { right: 16px; text-align: right; font-size: 22px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.hud-right { right: 76px; text-align: right; font-size: 20px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .hud-right b { color: #5dff8a; font-size: 30px; }
 .hud-center { left: 50%; transform: translateX(-50%); width: min(420px, 50vw); text-align: center; font-size: 18px; }
 .hud-center b { color: #7ef9ff; font-size: 24px; }
@@ -89,30 +90,11 @@ html, body {
 .bar.boss i { background: linear-gradient(90deg, #a0002a, #ff2d55, #ff9a9a); }
 .badge { font-size: 15px; padding: 4px 10px; border-radius: 10px; background: rgba(255, 225, 90, .2); border: 2px solid #ffe15a; color: #ffe15a; }
 .badge.off { border-color: #777; color: #aaa; background: rgba(0, 0, 0, .3); }
+#pauseBtn { position: absolute; top: 12px; right: 16px; }
 .icon-btn {
   font-size: 22px; width: 48px; height: 48px; border-radius: 14px; border: 2px solid #7ef9ff; color: #fff;
   background: rgba(20, 20, 70, .8); cursor: pointer;
 }
-.super {
-  position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
-  width: min(380px, 70vw); height: 62px; border-radius: 31px; border: 3px solid #7ef9ff; overflow: hidden;
-  background: rgba(10, 10, 40, .8); color: #fff; font: inherit; font-weight: 900; font-size: 20px; cursor: pointer;
-}
-.super-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: linear-gradient(90deg, #2d7bff, #b84dff); transition: width .2s; }
-.super-text { position: relative; z-index: 1; text-shadow: 0 0 6px #000; }
-.super.ready { border-color: #ffe15a; animation: superReady .6s infinite alternate; }
-.super.ready .super-fill { background: linear-gradient(90deg, #ff7a18, #ffe15a, #ff2d75); }
-@keyframes superReady { from { box-shadow: 0 0 10px #ffe15a; } to { box-shadow: 0 0 40px #ff7a18, 0 0 80px #ffe15a; } }
-
-#joyBase {
-  position: fixed; width: 140px; height: 140px; margin: -70px 0 0 -70px; border-radius: 50%;
-  border: 3px solid rgba(126, 249, 255, .6); background: rgba(126, 249, 255, .08); pointer-events: none;
-}
-#joyKnob {
-  position: absolute; left: 50%; top: 50%; width: 60px; height: 60px; margin: -30px 0 0 -30px; border-radius: 50%;
-  background: rgba(126, 249, 255, .55); box-shadow: 0 0 20px #7ef9ff;
-}
-
 /* ---------- 横幅 + 飘字 ---------- */
 #banner { position: fixed; left: 0; right: 0; top: 28%; text-align: center; z-index: 15; pointer-events: none; }
 #banner .b-main {
@@ -226,4 +208,46 @@ html, body {
   #banner .b-main { font-size: 52px; }
   .card-en { font-size: 46px; } .q-en { font-size: 44px; }
   .btn.huge { font-size: 28px; padding: 14px 36px; }
+}
+
+/* ---------- 第一人称 HUD ---------- */
+#crosshair { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+#crosshair i { position: absolute; width: 3px; height: 12px; background: #7ef9ff; box-shadow: 0 0 6px #7ef9ff; left: -1.5px; top: -6px; transform-origin: 1.5px 6px; }
+#crosshair i:nth-child(1) { transform: rotate(0deg) translateY(-14px); }
+#crosshair i:nth-child(2) { transform: rotate(120deg) translateY(-14px); }
+#crosshair i:nth-child(3) { transform: rotate(240deg) translateY(-14px); }
+#crosshair b { position: absolute; width: 4px; height: 4px; left: -2px; top: -2px; border-radius: 50%; background: #fff; }
+#crosshair.hot i { background: #ff5577; box-shadow: 0 0 8px #ff5577; }
+#hitmarker { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(1.6); font-size: 34px; font-weight: 900; color: #fff; opacity: 0; text-shadow: 0 0 8px #ff2d55; transition: opacity .15s, transform .15s; }
+#hitmarker.on { opacity: 1; transform: translate(-50%, -50%) scale(1); transition: none; }
+#hitmarker.head { color: #ffe15a; }
+#radar { width: 150px; height: 150px; border-radius: 50%; border: 2px solid rgba(126, 249, 255, .6); background: rgba(5, 10, 40, .55); box-shadow: 0 0 14px rgba(126, 249, 255, .35); }
+#grenadeBox {
+  position: absolute; right: 22px; bottom: 22px; display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 18px;
+  background: rgba(10, 10, 40, .7); border: 2px solid #ffb347; font-weight: 900; text-shadow: 0 0 6px #000;
+}
+#grenadeBox .g-icon { font-size: 34px; } #grenadeBox b { font-size: 34px; color: #ffe15a; } #grenadeBox .g-key { font-size: 14px; color: #ccd; }
+#grenadeBox.bump { animation: popIn .3s; }
+#hurt { position: fixed; inset: 0; pointer-events: none; z-index: 8; opacity: 0; background: radial-gradient(ellipse at center, rgba(255,0,40,0) 45%, rgba(255,0,40,.75) 100%); transition: opacity .5s; }
+#clickToPlay { position: fixed; inset: 0; z-index: 18; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .35); cursor: pointer; }
+.ctp-box { text-align: center; padding: 26px 34px; border-radius: 24px; border: 3px solid #ffe15a; background: rgba(15, 12, 50, .9); box-shadow: 0 0 40px rgba(255, 225, 90, .5); animation: pulse 1.4s infinite; }
+.ctp-big { font-size: 34px; font-weight: 900; color: #ffe15a; }
+.ctp-small { font-size: 17px; color: #bfe9ff; margin-top: 8px; }
+.sens { margin: 8px 0; font-size: 18px; display: flex; align-items: center; gap: 10px; }
+.sens input { width: 160px; }
+
+/* 触控 */
+#touchUI { position: absolute; inset: 0; pointer-events: none; }
+#touchUI .tbtn { pointer-events: auto; position: absolute; border-radius: 50%; border: 3px solid #7ef9ff; background: rgba(20, 20, 70, .55); color: #fff; font-size: 34px; display: flex; flex-direction: column; align-items: center; justify-content: center; font-weight: 900; touch-action: none; }
+#touchUI .tbtn span { font-size: 13px; }
+#touchUI .tbtn.down { background: rgba(126, 249, 255, .45); transform: scale(.94); }
+#tFire { width: 110px; height: 110px; right: calc(28px + env(safe-area-inset-right, 0px)); bottom: 120px; border-color: #ff7a18 !important; }
+#tGrenade { width: 80px; height: 80px; right: calc(150px + env(safe-area-inset-right, 0px)); bottom: 90px; border-color: #ffe15a !important; }
+#tJump { width: 72px; height: 72px; right: calc(40px + env(safe-area-inset-right, 0px)); bottom: 250px; }
+#joyBase { position: absolute; left: calc(40px + env(safe-area-inset-left, 0px)); bottom: 50px; width: 150px; height: 150px; border-radius: 50%; border: 3px solid rgba(126, 249, 255, .6); background: rgba(126, 249, 255, .08); }
+#joyKnob { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; background: rgba(126, 249, 255, .55); box-shadow: 0 0 20px #7ef9ff; }
+body.touch #grenadeBox { right: auto; left: 50%; transform: translateX(-50%); bottom: 16px; }
+body.touch #grenadeBox .g-key { display: none; }
+@media (max-width: 760px) {
+  #radar { width: 100px; height: 100px; }
 }
