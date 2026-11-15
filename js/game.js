@@ -1,179 +1,307 @@
-// 三角形部队 —— 第一人称射击（Three.js）
+// 雷霆特战队 —— 军事题材第一人称射击（Three.js）
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
   const rand = (a, b) => a + Math.random() * (b - a);
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  const R = 42; // 战场半径
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const HALF = 45;            // 基地是一个 90 x 90 的方形
+  const LIM = HALF - 1;       // 能走到的边界
+  const PAD = new THREE.Vector3(0, 0, 34); // 直升机停机坪
+  const SPAWN = new THREE.Vector3(0, 0, 26);
   const isTouch = (window.matchMedia && matchMedia('(pointer: coarse)').matches) || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
   if (isTouch) document.body.classList.add('touch');
+  const SHADOWS = !isTouch;
 
   // ================= 渲染器 / 场景 =================
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isTouch ? 1.5 : 2));
   renderer.setSize(innerWidth, innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
+  renderer.toneMappingExposure = 1.05;
+  renderer.autoClear = false;
+  if (SHADOWS) { renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; }
   $('game').appendChild(renderer.domElement);
+  const maxAniso = renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 1;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x05030f);
-  scene.fog = new THREE.Fog(0x05030f, 30, 110);
-  const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 500);
+  scene.fog = new THREE.Fog(0xe0c08e, 70, 250);
+  const BASE_FOV = 75;
+  const camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 0.05, 700);
   camera.rotation.order = 'YXZ';
   scene.add(camera);
 
-  scene.add(new THREE.HemisphereLight(0x99aaff, 0x330044, 0.8));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.4);
-  sun.position.set(20, 40, 15);
-  scene.add(sun);
+  scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x9a7448, 1.1));
+  const sun = new THREE.DirectionalLight(0xffe3b8, 2.6);
+  sun.position.set(40, 60, 25);
+  scene.add(sun, sun.target);
+  if (SHADOWS) {
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    const sc = sun.shadow.camera;
+    sc.left = -48; sc.right = 48; sc.top = 48; sc.bottom = -48; sc.near = 5; sc.far = 200;
+    sun.shadow.bias = -0.0006;
+    sun.shadow.normalBias = 0.03;
+  }
+  const flashLight = new THREE.PointLight(0xffc070, 0, 14, 2);
+  scene.add(flashLight);
 
+  // ---------- 贴图（全部用画布现画，不需要图片文件） ----------
+  function canvasTex(w, h, draw, rx, ry) {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    draw(c.getContext('2d'), w, h);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = maxAniso;
+    if (rx) t.repeat.set(rx, ry || rx);
+    return t;
+  }
+  function speckle(g, w, h, n, cols, size) {
+    for (let i = 0; i < n; i++) {
+      g.fillStyle = cols[i % cols.length];
+      const s = Math.random() * size + 1;
+      g.fillRect(Math.random() * w, Math.random() * h, s, s);
+    }
+  }
   const glowTex = (() => {
     const c = document.createElement('canvas'); c.width = c.height = 128;
     const g = c.getContext('2d');
     const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
     gr.addColorStop(0, 'rgba(255,255,255,1)');
-    gr.addColorStop(0.2, 'rgba(255,255,255,0.85)');
-    gr.addColorStop(0.5, 'rgba(255,255,255,0.25)');
+    gr.addColorStop(0.25, 'rgba(255,255,255,0.8)');
+    gr.addColorStop(0.55, 'rgba(255,255,255,0.25)');
     gr.addColorStop(1, 'rgba(255,255,255,0)');
     g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
     return new THREE.CanvasTexture(c);
   })();
-  function emojiTex(ch) {
-    const c = document.createElement('canvas'); c.width = c.height = 128;
-    const g = c.getContext('2d');
-    g.font = '100px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(ch, 64, 70);
-    const t = new THREE.CanvasTexture(c);
-    t.colorSpace = THREE.SRGBColorSpace;
-    return t;
-  }
-  function glowSprite(color, size, opacity) {
-    const m = new THREE.SpriteMaterial({
-      map: glowTex, color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-      opacity: opacity == null ? 0.9 : opacity, toneMapped: false,
+  const sandTex = canvasTex(256, 256, (g, w, h) => {
+    g.fillStyle = '#d6b27a'; g.fillRect(0, 0, w, h);
+    speckle(g, w, h, 2600, ['#c9a46c', '#e2c290', '#bf9960', '#e9cc9c'], 2.5);
+    g.strokeStyle = 'rgba(160,120,70,0.18)'; g.lineWidth = 3;
+    for (let i = 0; i < 6; i++) { g.beginPath(); const y = Math.random() * h; g.moveTo(0, y); g.bezierCurveTo(w * 0.3, y + 14, w * 0.6, y - 14, w, y); g.stroke(); }
+  }, 70);
+  const roadTex = canvasTex(128, 128, (g, w, h) => {
+    g.fillStyle = '#6e6658'; g.fillRect(0, 0, w, h);
+    speckle(g, w, h, 900, ['#5e5749', '#7d7566', '#686052'], 2);
+    g.fillStyle = '#e8c547'; g.fillRect(w / 2 - 3, 0, 6, h * 0.55);
+  }, 1, 12);
+  const crateTex = canvasTex(128, 128, (g, w, h) => {
+    g.fillStyle = '#a5743f'; g.fillRect(0, 0, w, h);
+    g.strokeStyle = '#7a5129'; g.lineWidth = 3;
+    for (let y = 0; y < h; y += 21) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+    g.fillStyle = '#6b4423';
+    g.fillRect(0, 0, w, 12); g.fillRect(0, h - 12, w, 12); g.fillRect(0, 0, 12, h); g.fillRect(w - 12, 0, 12, h);
+    g.lineWidth = 12; g.strokeStyle = '#6b4423';
+    g.beginPath(); g.moveTo(8, 8); g.lineTo(w - 8, h - 8); g.stroke();
+    speckle(g, w, h, 300, ['rgba(60,35,15,0.25)', 'rgba(255,220,170,0.15)'], 2);
+  });
+  function containerTex(base) {
+    return canvasTex(256, 128, (g, w, h) => {
+      g.fillStyle = base; g.fillRect(0, 0, w, h);
+      for (let x = 0; x < w; x += 12) { g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(x, 0, 4, h); g.fillStyle = 'rgba(255,255,255,0.1)'; g.fillRect(x + 5, 0, 2, h); }
+      g.fillStyle = 'rgba(0,0,0,0.3)'; g.fillRect(0, 0, w, 7); g.fillRect(0, h - 7, w, 7);
+      g.fillStyle = 'rgba(255,255,255,0.55)'; g.font = 'bold 22px sans-serif'; g.fillText('THUNDER CARGO', 26, 70);
+      speckle(g, w, h, 500, ['rgba(90,50,20,0.25)', 'rgba(0,0,0,0.15)'], 3);
     });
-    const s = new THREE.Sprite(m);
-    s.scale.setScalar(size);
-    return s;
   }
-
-  // ---------- 霓虹地面 ----------
-  const floorMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 }, uPlayer: { value: new THREE.Vector3() }, uR: { value: R } },
-    vertexShader: `varying vec3 vW;
-      void main(){ vec4 w = modelMatrix * vec4(position,1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: `uniform float uTime; uniform vec3 uPlayer; uniform float uR; varying vec3 vW;
-      float grid(vec2 p, float s, float w){
-        vec2 g = abs(fract(p / s - 0.5) - 0.5) * s;
-        vec2 fw = fwidth(p) * 1.2 + w;
-        vec2 l = 1.0 - smoothstep(vec2(0.0), fw, g);
-        return max(l.x, l.y);
-      }
-      void main(){
-        float d = length(vW.xz);
-        vec3 c1 = mix(vec3(0.1,0.45,1.0), vec3(0.85,0.2,1.0), 0.5 + 0.5 * sin(d * 0.08 - uTime * 0.7));
-        float g1 = grid(vW.xz, 2.0, 0.015);
-        float g2 = grid(vW.xz, 10.0, 0.05);
-        float pd = length(vW.xz - uPlayer.xz);
-        float wave = mod(uTime * 14.0, 48.0);
-        float pulse = smoothstep(2.0, 0.0, abs(pd - wave)) * (1.0 - wave / 48.0);
-        vec3 col = vec3(0.015,0.01,0.05) + c1 * (g1 * 0.28 + g2 * 0.7) + c1 * pulse * (0.1 + g1 * 0.7);
-        float edge = smoothstep(uR - 2.0, uR, d) * (1.0 - smoothstep(uR, uR + 0.8, d));
-        col += vec3(1.0,0.25,0.6) * edge * 2.2;
-        if (d > uR) col *= 0.3;
-        col *= 1.0 - smoothstep(70.0, 130.0, d);
-        gl_FragColor = vec4(col, 1.0);
-      }`,
-    extensions: { derivatives: true },
+  const CONTAINER_TEX = ['#2f6b8f', '#a8432f', '#6b7a35', '#c48a2c'].map(containerTex);
+  const concreteTex = canvasTex(128, 128, (g, w, h) => {
+    g.fillStyle = '#b1aba0'; g.fillRect(0, 0, w, h);
+    speckle(g, w, h, 1200, ['#a39d92', '#bdb7ac', '#979186'], 2);
+    g.fillStyle = 'rgba(0,0,0,0.15)'; g.fillRect(0, 62, w, 3);
   });
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(320, 320), floorMat);
-  floor.rotation.x = -Math.PI / 2;
-  scene.add(floor);
-
-  // ---------- 能量护盾墙 ----------
-  const wallMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 } },
-    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-    fragmentShader: `uniform float uTime; varying vec2 vUv;
-      void main(){
-        float a = (1.0 - vUv.y) * 0.55;
-        float stripe = 0.5 + 0.5 * sin(vUv.x * 300.0 + uTime * 2.0);
-        float scan = smoothstep(0.03, 0.0, abs(fract(vUv.y - uTime * 0.25) - 0.5));
-        vec3 c = mix(vec3(1.0,0.2,0.6), vec3(0.2,0.6,1.0), vUv.y);
-        gl_FragColor = vec4(c * (a * (0.5 + stripe * 0.5) + scan * 0.6), 1.0);
-      }`,
-    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  const barrierTex = canvasTex(128, 64, (g, w, h) => {
+    g.fillStyle = '#b8b2a7'; g.fillRect(0, 0, w, h);
+    speckle(g, w, h, 500, ['#a39d92', '#c6c0b5'], 2);
+    for (let x = -20; x < w; x += 24) { g.fillStyle = '#f0b429'; g.beginPath(); g.moveTo(x, h); g.lineTo(x + 12, h); g.lineTo(x + 24, h - 14); g.lineTo(x + 12, h - 14); g.fill(); }
+    g.fillStyle = '#222'; g.fillRect(0, h - 14, w, 1);
   });
-  const wall = new THREE.Mesh(new THREE.CylinderGeometry(R + 0.6, R + 0.6, 6, 128, 1, true), wallMat);
-  wall.position.y = 3;
-  scene.add(wall);
+  const sandbagTex = canvasTex(128, 64, (g, w, h) => {
+    g.fillStyle = '#7d6a45'; g.fillRect(0, 0, w, h);
+    for (let r = 0; r < 4; r++) for (let c = -1; c < 5; c++) {
+      const x = c * 32 + (r % 2) * 16, y = r * 16;
+      g.fillStyle = ['#bda57a', '#b39b6f', '#c4ad83'][(r + c + 3) % 3];
+      g.beginPath(); g.ellipse(x + 16, y + 8, 15, 7, 0, 0, Math.PI * 2); g.fill();
+    }
+  });
+  const barrelTex = canvasTex(128, 64, (g, w, h) => {
+    g.fillStyle = '#c0392b'; g.fillRect(0, 0, w, h);
+    g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(0, 12, w, 4); g.fillRect(0, h - 16, w, 4);
+    g.fillStyle = '#ffd23f'; g.font = 'bold 26px sans-serif'; g.fillText('⚠', 8, 44); g.fillText('⚠', 72, 44);
+  });
+  const helipadTex = canvasTex(256, 256, (g, w, h) => {
+    g.fillStyle = '#4c4a44'; g.beginPath(); g.arc(128, 128, 126, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#ffd23f'; g.lineWidth = 10; g.beginPath(); g.arc(128, 128, 108, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = '#fff'; g.font = 'bold 150px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('H', 128, 136);
+  });
+  const flagTex = canvasTex(128, 80, (g, w, h) => {
+    g.fillStyle = '#2f6bd8'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#ffd23f';
+    g.beginPath(); g.moveTo(74, 6); g.lineTo(44, 44); g.lineTo(62, 44); g.lineTo(50, 74); g.lineTo(86, 32); g.lineTo(68, 32); g.lineTo(80, 6); g.fill();
+  });
+  const medkitTex = canvasTex(64, 64, (g, w, h) => {
+    g.fillStyle = '#f4f4f0'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#e5484d'; g.fillRect(24, 10, 16, 44); g.fillRect(10, 24, 44, 16);
+  });
+  const ammoTex = canvasTex(128, 64, (g, w, h) => {
+    g.fillStyle = '#4f5d2f'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#ffd23f'; g.font = 'bold 30px sans-serif'; g.textAlign = 'center'; g.fillText('AMMO', 64, 43);
+  });
 
-  const pillars = [];
+  // ---------- 天空 ----------
+  const SUN_DIR = new THREE.Vector3(0.55, 0.32, -0.77).normalize();
   {
-    const geo = new THREE.CylinderGeometry(1, 1, 9, 3);
-    for (let i = 0; i < 20; i++) {
-      const a = i / 20 * Math.PI * 2;
-      const col = i % 2 ? 0xff2d95 : 0x2d9bff;
-      const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 1, flatShading: true }));
-      m.position.set(Math.cos(a) * (R + 2.5), 4.5, Math.sin(a) * (R + 2.5));
-      m.rotation.y = -a;
-      const gs = glowSprite(col, 7, 0.7); gs.position.y = 5.5; m.add(gs);
+    const skyMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide, depthWrite: false, fog: false,
+      uniforms: { uSun: { value: SUN_DIR } },
+      vertexShader: 'varying vec3 vD; void main(){ vD = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+      fragmentShader: `uniform vec3 uSun; varying vec3 vD;
+        void main(){
+          float h = vD.y;
+          vec3 top = vec3(0.30,0.55,0.86), hor = vec3(0.98,0.80,0.56), gnd = vec3(0.86,0.72,0.52);
+          vec3 c = h > 0.0 ? mix(hor, top, pow(min(1.0, h * 1.6), 0.7)) : mix(hor, gnd, min(1.0, -h * 6.0));
+          float s = max(0.0, dot(normalize(vD), uSun));
+          c += vec3(1.0,0.85,0.55) * (pow(s, 600.0) * 2.0 + pow(s, 12.0) * 0.35);
+          gl_FragColor = vec4(c, 1.0);
+        }`,
+    });
+    const sky = new THREE.Mesh(new THREE.SphereGeometry(500, 32, 16), skyMat);
+    sky.renderOrder = -1;
+    scene.add(sky);
+    // 云
+    const cloudMat = new THREE.SpriteMaterial({ map: glowTex, color: 0xfff4e6, transparent: true, opacity: 0.55, depthWrite: false, fog: false });
+    for (let i = 0; i < 22; i++) {
+      const a = Math.random() * Math.PI * 2, r = rand(220, 380);
+      const cl = new THREE.Sprite(cloudMat);
+      cl.position.set(Math.cos(a) * r, rand(70, 140), Math.sin(a) * r);
+      cl.scale.set(rand(70, 140), rand(18, 30), 1);
+      scene.add(cl);
+    }
+  }
+  // 远处的山
+  {
+    const mMats = [0xa47c55, 0x8f6c4a, 0xb8916a].map(c => new THREE.MeshStandardMaterial({ color: c, flatShading: true, roughness: 1 }));
+    for (let i = 0; i < 34; i++) {
+      const a = i / 34 * Math.PI * 2 + rand(-0.05, 0.05), r = rand(170, 230);
+      const hgt = rand(25, 70);
+      const m = new THREE.Mesh(new THREE.ConeGeometry(rand(30, 55), hgt, 5 + Math.floor(Math.random() * 3)), mMats[i % 3]);
+      m.position.set(Math.cos(a) * r, hgt / 2 - 3, Math.sin(a) * r);
+      m.rotation.y = Math.random() * 3;
       scene.add(m);
-      pillars.push(m);
     }
   }
 
-  // ---------- 星空 + 天上的大三角 ----------
+  // ---------- 地面 ----------
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshStandardMaterial({ map: sandTex, roughness: 1 }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
   {
-    const n = 1800, pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
-    const c = new THREE.Color();
-    for (let i = 0; i < n; i++) {
-      const th = Math.random() * Math.PI * 2, ph = Math.random() * Math.PI * 0.45;
-      const r = rand(180, 260);
-      pos[i * 3] = Math.cos(th) * Math.sin(ph) * r;
-      pos[i * 3 + 1] = Math.cos(ph) * r * 0.7 + 10;
-      pos[i * 3 + 2] = Math.sin(th) * Math.sin(ph) * r;
-      c.setHSL(rand(0.5, 0.85), 0.8, rand(0.6, 0.95));
-      col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    scene.add(new THREE.Points(g, new THREE.PointsMaterial({ size: 2.2, map: glowTex, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false })));
+    const roadMat = new THREE.MeshStandardMaterial({ map: roadTex, roughness: 0.95 });
+    const r1 = new THREE.Mesh(new THREE.PlaneGeometry(6, 90), roadMat);
+    r1.rotation.x = -Math.PI / 2; r1.position.set(0, 0.01, 0); r1.receiveShadow = true; scene.add(r1);
+    const t2 = roadTex.clone(); t2.needsUpdate = true;
+    const r2 = new THREE.Mesh(new THREE.PlaneGeometry(6, 90), new THREE.MeshStandardMaterial({ map: t2, roughness: 0.95 }));
+    r2.rotation.x = -Math.PI / 2; r2.rotation.z = Math.PI / 2; r2.position.set(0, 0.012, -4); r2.receiveShadow = true; scene.add(r2);
+    const pad = new THREE.Mesh(new THREE.CircleGeometry(6, 48), new THREE.MeshStandardMaterial({ map: helipadTex, roughness: 0.9 }));
+    pad.rotation.x = -Math.PI / 2; pad.position.set(PAD.x, 0.02, PAD.z); pad.receiveShadow = true; scene.add(pad);
   }
-  const skyTris = [];
-  [[0x2d9bff, 60, -120, 60, -150], [0xff2d95, 45, 130, 70, -110], [0xffe15a, 30, 0, 95, -200], [0xb84dff, 50, -150, 50, 120], [0x2d9bff, 40, 140, 60, 140]].forEach(([col, size, x, y, z]) => {
-    const m = new THREE.Mesh(new THREE.TorusGeometry(size, size * 0.03, 4, 3),
-      new THREE.MeshBasicMaterial({ color: col, fog: false, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
-    m.position.set(x, y, z);
-    m.lookAt(0, 0, 0);
-    scene.add(m);
-    skyTris.push(m);
-  });
 
-  // ---------- 掩体（可以躲，也可以跳上去） ----------
+  // ---------- 掩体 ----------
   const obstacles = [];
-  const OB_COLORS = [0x00e5ff, 0xff2d95, 0xb84dff, 0xffd21f];
-  function addBox(x, z, w, d, h, ci) {
-    const col = OB_COLORS[ci % OB_COLORS.length];
-    const geo = new THREE.BoxGeometry(w, h, d);
-    const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x15153a, emissive: col, emissiveIntensity: 0.08, roughness: 0.5, metalness: 0.4 }));
-    m.position.set(x, h / 2, z);
-    const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: col, toneMapped: false }));
-    m.add(e);
-    scene.add(m);
-    obstacles.push({ x, z, hx: w / 2, hz: d / 2, h });
+  const matCache = {};
+  function stdMat(key, opts) { return matCache[key] || (matCache[key] = new THREE.MeshStandardMaterial(opts)); }
+  function shadowify(o) { if (SHADOWS) o.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } }); return o; }
+  function addOb(x, z, w, d, h, mesh, kind) {
+    if (mesh) { mesh.position.set(x, mesh.isGroup ? 0 : h / 2, z); shadowify(mesh); scene.add(mesh); }
+    const o = { x, z, hx: w / 2, hz: d / 2, h, mesh, kind: kind || 'box' };
+    obstacles.push(o);
+    return o;
   }
-  [
-    [10, 2, 3, 3, 2.2], [-11, 5, 3, 7, 3], [0, -13, 9, 2, 2.2], [8, 13, 3, 3, 4], [-9, -11, 3, 3, 1.6],
-    [20, -9, 2, 9, 3], [-20, 13, 4, 4, 3.5], [23, 14, 3, 3, 2], [-23, -14, 7, 2, 2.4], [3, 24, 7, 2, 3],
-    [-4, -26, 3, 3, 4], [29, -1, 2, 7, 2.5], [-30, 1, 3, 3, 3], [15, 25, 2, 2, 5], [-15, -25, 2, 2, 5],
-    [16, -22, 4, 2, 1.8], [-15, 23, 2, 4, 1.8], [12, 3.5, 1.6, 1.6, 1.1], [-31, -9, 2.5, 2.5, 1.4], [31, 10, 2.5, 2.5, 1.4],
-  ].forEach((b, i) => addBox(b[0], b[1], b[2], b[3], b[4], i));
+  function removeOb(o) {
+    const i = obstacles.indexOf(o);
+    if (i >= 0) obstacles.splice(i, 1);
+    if (o.mesh) scene.remove(o.mesh);
+  }
+  function crate(x, z, s) { addOb(x, z, s, s, s, new THREE.Mesh(new THREE.BoxGeometry(s, s, s), stdMat('crate', { map: crateTex, roughness: 0.85 }))); }
+  function container(x, z, alongX, ci) {
+    const w = alongX ? 6 : 2.6, d = alongX ? 2.6 : 6;
+    addOb(x, z, w, d, 2.6, new THREE.Mesh(new THREE.BoxGeometry(w, 2.6, d), stdMat('cont' + ci, { map: CONTAINER_TEX[ci % 4], roughness: 0.6, metalness: 0.3 })));
+  }
+  function sandbags(x, z, alongX) {
+    const w = alongX ? 4 : 1.1, d = alongX ? 1.1 : 4;
+    const t = sandbagTex.clone(); t.needsUpdate = true; t.repeat.set(alongX ? 2 : 0.6, 1);
+    addOb(x, z, w, d, 1.15, new THREE.Mesh(new THREE.BoxGeometry(w, 1.15, d), stdMat('sb' + alongX, { map: t, roughness: 1 })));
+  }
+  function barrier(x, z, alongX) {
+    const w = alongX ? 3 : 0.8, d = alongX ? 0.8 : 3;
+    addOb(x, z, w, d, 1.4, new THREE.Mesh(new THREE.BoxGeometry(w, 1.4, d), stdMat('bar', { map: barrierTex, roughness: 0.9 })));
+  }
+  const barrelGeo = new THREE.CylinderGeometry(0.45, 0.45, 1.25, 16);
+  function barrel(x, z) {
+    const o = addOb(x, z, 0.9, 0.9, 1.25, new THREE.Mesh(barrelGeo, stdMat('barrel', { map: barrelTex, roughness: 0.5, metalness: 0.3 })), 'barrel');
+    o.hp = 3;
+    return o;
+  }
+  // 外墙 + 角上的瞭望塔
+  {
+    const wallMat = new THREE.MeshStandardMaterial({ map: (() => { const t = concreteTex.clone(); t.needsUpdate = true; t.repeat.set(24, 1); return t; })(), roughness: 0.95 });
+    for (const [x, z, w, d] of [[0, -HALF - 0.5, 2 * HALF + 2, 1], [0, HALF + 0.5, 2 * HALF + 2, 1], [-HALF - 0.5, 0, 1, 2 * HALF + 2], [HALF + 0.5, 0, 1, 2 * HALF + 2]]) {
+      addOb(x, z, w, d, 4, new THREE.Mesh(new THREE.BoxGeometry(w, 4, d), wallMat), 'wall');
+    }
+    const woodMat = stdMat('wood', { color: 0x7a5530, roughness: 0.9 });
+    const roofMat = stdMat('roof', { color: 0x56682f, roughness: 0.9, flatShading: true });
+    for (const [x, z] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const tw = new THREE.Group();
+      for (const [lx, lz] of [[-1.3, -1.3], [1.3, -1.3], [-1.3, 1.3], [1.3, 1.3]]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.3, 8, 0.3), woodMat); leg.position.set(lx, 4, lz); tw.add(leg);
+      }
+      const plat = new THREE.Mesh(new THREE.BoxGeometry(3.6, 1.2, 3.6), woodMat); plat.position.y = 8.2; tw.add(plat);
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(3.2, 1.6, 4), roofMat); roof.position.y = 10.4; roof.rotation.y = Math.PI / 4; tw.add(roof);
+      tw.position.set(x * (HALF + 2.5), 0, z * (HALF + 2.5));
+      scene.add(shadowify(tw));
+    }
+    // 墙外的帐篷
+    const tentMat = stdMat('tent', { color: 0x6b7a35, roughness: 1, flatShading: true });
+    for (let i = 0; i < 12; i++) {
+      const a = i / 12 * Math.PI * 2 + 0.2, r = rand(56, 75);
+      const t = new THREE.Mesh(new THREE.ConeGeometry(3.5, 3.2, 4), tentMat);
+      t.position.set(Math.cos(a) * r, 1.6, Math.sin(a) * r); t.rotation.y = Math.random();
+      scene.add(t);
+    }
+  }
+  // 基地里的东西
+  [[-20, -8, 1, 0], [-20, -2.2, 1, 1], [22, -12, 0, 2], [14, -28, 1, 3], [-12, -30, 0, 0], [30, 18, 0, 1], [-30, 16, 1, 2], [33, -5, 0, 3]]
+    .forEach(([x, z, ax, ci]) => container(x, z, !!ax, ci));
+  [[8, 8], [9.7, 8], [-8, 14], [-6, -14], [12, -4], [-14, 6], [26, -30], [-26, -26], [18, 24], [0, -20], [-2, -40], [38, 30], [-38, 30]]
+    .forEach(([x, z], i) => crate(x, z, i % 3 === 2 ? 1.2 : 1.6));
+  [[0, 21, 1], [-10, 23, 1], [10, 23, 1], [0, -8, 1], [16, 6, 0], [-16, -16, 1], [24, 0, 0], [-24, 8, 0], [8, -36, 1], [-8, -36, 1], [-34, -30, 0], [34, -24, 0]]
+    .forEach(([x, z, ax]) => sandbags(x, z, !!ax));
+  [[5, 1, 1], [-5, 1, 1], [28, -20, 0], [-28, -14, 0], [14, 15, 1], [-14, 30, 1], [20, 36, 0]]
+    .forEach(([x, z, ax]) => barrier(x, z, !!ax));
+  const BARREL_SPOTS = [[9, 10.2], [-8, 16.2], [-20, -11.8], [22, -8.4], [1.4, -21.6], [13, -30.2], [-28, 18.2], [30, 6], [-4, -12], [17.4, 22], [-36, -6], [36, 12]];
+  // 油罐（第二关的“油库”）
+  {
+    const tankMat = stdMat('tank', { color: 0xd9d4c7, roughness: 0.5, metalness: 0.4 });
+    for (const [x, z] of [[-37, -14], [-37, -20.5]]) {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2.6, 4.2, 24), tankMat); body.position.y = 2.1; g.add(body);
+      const top = new THREE.Mesh(new THREE.SphereGeometry(2.6, 24, 8, 0, Math.PI * 2, 0, Math.PI / 2), tankMat); top.scale.y = 0.35; top.position.y = 4.2; g.add(top);
+      const stripe = new THREE.Mesh(new THREE.CylinderGeometry(2.62, 2.62, 0.5, 24), stdMat('tankStripe', { color: 0xc0392b, roughness: 0.6 })); stripe.position.y = 3; g.add(stripe);
+      g.position.y = 0;
+      addOb(x, z, 5.2, 5.2, 4.6, g, 'tank');
+    }
+  }
+  // 旗杆
+  {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 9, 8), stdMat('pole', { color: 0xdddddd, metalness: 0.6, roughness: 0.3 }));
+    pole.position.set(8, 4.5, 34); scene.add(shadowify(pole));
+    const flag = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.5, 8, 1), new THREE.MeshStandardMaterial({ map: flagTex, side: THREE.DoubleSide, roughness: 0.9 }));
+    flag.position.set(9.25, 8, 34); scene.add(flag);
+    var flagMesh = flag;
+  }
 
-  // 把圆形推出箱子。feetY 高于箱顶的就不挡（站在上面）
   function pushOut(p, r, feetY) {
     for (const o of obstacles) {
       if (feetY != null && feetY > o.h - 0.35) continue;
@@ -202,15 +330,15 @@
     }
     return null;
   }
-  // 射线打到箱子 / 地面的距离
+  // 射线打到掩体 / 地面：返回距离和打到的东西
+  const rayHit = { t: 0, ob: null };
   function rayObstacles(o, d, maxT) {
-    let best = maxT;
+    let best = maxT, bestO = null;
     if (d.y < -1e-4) { const t = -o.y / d.y; if (t > 0 && t < best) best = t; }
     for (const b of obstacles) {
-      let t0 = 0, t1 = best;
+      let t0 = 0, t1 = best, hit = true;
       const mins = [b.x - b.hx, 0, b.z - b.hz], maxs = [b.x + b.hx, b.h, b.z + b.hz];
       const oo = [o.x, o.y, o.z], dd = [d.x, d.y, d.z];
-      let hit = true;
       for (let k = 0; k < 3; k++) {
         if (Math.abs(dd[k]) < 1e-8) { if (oo[k] < mins[k] || oo[k] > maxs[k]) { hit = false; break; } continue; }
         let ta = (mins[k] - oo[k]) / dd[k], tb = (maxs[k] - oo[k]) / dd[k];
@@ -218,9 +346,18 @@
         t0 = Math.max(t0, ta); t1 = Math.min(t1, tb);
         if (t0 > t1) { hit = false; break; }
       }
-      if (hit && t0 > 0 && t0 < best) best = t0;
+      if (hit && t0 > 0 && t0 < best) { best = t0; bestO = b; }
     }
-    return best;
+    rayHit.t = best; rayHit.ob = bestO;
+    return rayHit;
+  }
+  const losDir = new THREE.Vector3();
+  function lineOfSight(a, b) {
+    losDir.copy(b).sub(a);
+    const len = losDir.length();
+    if (len < 0.01) return true;
+    losDir.divideScalar(len);
+    return rayObstacles(a, losDir, len).t >= len - 0.2;
   }
   function raySphere(o, d, c, r) {
     const ox = o.x - c.x, oy = o.y - c.y, oz = o.z - c.z;
@@ -232,20 +369,25 @@
     return t > 0 ? t : (cc < 0 ? 0.01 : -1);
   }
 
-  // ================= 对象池 =================
-  const matCache = {};
+  // ================= 特效 =================
   function basicMat(color) {
-    return matCache[color] || (matCache[color] = new THREE.MeshBasicMaterial({ color, toneMapped: false }));
+    const k = 'b' + color;
+    return matCache[k] || (matCache[k] = new THREE.MeshBasicMaterial({ color, toneMapped: false }));
   }
   const spriteMatCache = {};
   function sharedGlowMat(color, op) {
     const k = color + '_' + op;
     return spriteMatCache[k] || (spriteMatCache[k] = new THREE.SpriteMaterial({ map: glowTex, color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: op, toneMapped: false }));
   }
+  function glowSprite(color, size, opacity) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: opacity == null ? 0.9 : opacity, toneMapped: false }));
+    s.scale.setScalar(size);
+    return s;
+  }
   const tmpC = new THREE.Color(), tmpV = new THREE.Vector3(), tmpV2 = new THREE.Vector3(), tmpV3 = new THREE.Vector3();
 
-  // 粒子
-  const P_N = 4000;
+  // 火花粒子
+  const P_N = 3000;
   const pPos = new Float32Array(P_N * 3), pCol = new Float32Array(P_N * 3), pVel = new Float32Array(P_N * 3);
   const pBase = new Float32Array(P_N * 3), pLife = new Float32Array(P_N), pMax = new Float32Array(P_N);
   let pIdx = 0;
@@ -253,12 +395,9 @@
   const pGeo = new THREE.BufferGeometry();
   pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
   pGeo.setAttribute('color', new THREE.BufferAttribute(pCol, 3));
-  const particles = new THREE.Points(pGeo, new THREE.PointsMaterial({
-    size: 0.5, map: glowTex, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
-  }));
+  const particles = new THREE.Points(pGeo, new THREE.PointsMaterial({ size: 0.45, map: glowTex, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
   particles.frustumCulled = false;
   scene.add(particles);
-
   function emit(pos, color, count, speed, life, upBias) {
     tmpC.set(color);
     for (let n = 0; n < count; n++) {
@@ -291,10 +430,43 @@
     pGeo.attributes.color.needsUpdate = true;
   }
 
-  // 方块碎片（坏蛋被打败时变成一堆小方块）
-  const shardGeo = new THREE.BoxGeometry(0.28, 0.28, 0.28);
+  // 烟雾（普通混合，灰色的）
+  const smokes = [];
+  for (let i = 0; i < 90; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0x8a8273, transparent: true, depthWrite: false, opacity: 0 }));
+    s.visible = false; scene.add(s);
+    smokes.push({ s, life: 0, max: 1, size: 1, vel: new THREE.Vector3(), op: 0.6 });
+  }
+  let smokeIdx = 0;
+  function puff(pos, n, size, color, life, spread) {
+    for (let k = 0; k < n; k++) {
+      const p = smokes[smokeIdx]; smokeIdx = (smokeIdx + 1) % smokes.length;
+      const sp = spread == null ? size * 0.4 : spread;
+      p.s.position.set(pos.x + rand(-sp, sp), pos.y + rand(-sp, sp) * 0.5, pos.z + rand(-sp, sp));
+      p.s.material.color.set(color || 0x8a8273);
+      p.vel.set(rand(-0.6, 0.6), rand(0.6, 1.6), rand(-0.6, 0.6));
+      p.life = p.max = (life || 1.6) * rand(0.7, 1.2);
+      p.size = size * rand(0.7, 1.2);
+      p.op = color === 0xffffff ? 0.75 : 0.6;
+      p.s.visible = true;
+    }
+  }
+  function updateSmoke(dt) {
+    for (const p of smokes) {
+      if (p.life <= 0) continue;
+      p.life -= dt;
+      if (p.life <= 0) { p.s.visible = false; continue; }
+      const t = 1 - p.life / p.max;
+      p.s.position.addScaledVector(p.vel, dt);
+      p.s.scale.setScalar(p.size * (0.5 + t * 1.2));
+      p.s.material.opacity = p.op * Math.min(1, t * 6) * (1 - t);
+    }
+  }
+
+  // 碎片
+  const shardGeo = new THREE.BoxGeometry(0.22, 0.22, 0.22);
   const shards = [];
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 160; i++) {
     const m = new THREE.Mesh(shardGeo, basicMat(0xffffff));
     m.visible = false; scene.add(m);
     shards.push({ m, vel: new THREE.Vector3(), spin: new THREE.Vector3(), life: 0, max: 1, s: 1 });
@@ -303,12 +475,12 @@
   function spawnShards(pos, color, n, size) {
     for (let k = 0; k < n; k++) {
       const sh = shards[shardIdx]; shardIdx = (shardIdx + 1) % shards.length;
-      sh.m.material = basicMat(k % 3 === 0 ? 0x221a33 : color);
+      sh.m.material = basicMat(k % 3 === 0 ? 0x3a3326 : color);
       sh.m.position.set(pos.x + rand(-0.4, 0.4) * size, pos.y + rand(-0.6, 0.6) * size, pos.z + rand(-0.4, 0.4) * size);
-      sh.vel.set(rand(-1, 1), rand(0.4, 1.5), rand(-1, 1)).multiplyScalar(7 * Math.sqrt(size));
+      sh.vel.set(rand(-1, 1), rand(0.4, 1.5), rand(-1, 1)).multiplyScalar(6 * Math.sqrt(size));
       sh.spin.set(rand(-10, 10), rand(-10, 10), rand(-10, 10));
-      sh.life = sh.max = rand(0.8, 1.4);
-      sh.s = rand(0.6, 1.4) * Math.sqrt(size);
+      sh.life = sh.max = rand(0.7, 1.2);
+      sh.s = rand(0.6, 1.3) * Math.sqrt(size);
       sh.m.visible = true;
     }
   }
@@ -319,16 +491,16 @@
       if (sh.life <= 0) { sh.m.visible = false; continue; }
       sh.vel.y -= 22 * dt;
       sh.m.position.addScaledVector(sh.vel, dt);
-      if (sh.m.position.y < 0.15) { sh.m.position.y = 0.15; sh.vel.y *= -0.45; sh.vel.x *= 0.7; sh.vel.z *= 0.7; }
-      sh.m.rotation.x += sh.spin.x * dt; sh.m.rotation.y += sh.spin.y * dt; sh.m.rotation.z += sh.spin.z * dt;
+      if (sh.m.position.y < 0.12) { sh.m.position.y = 0.12; sh.vel.y *= -0.4; sh.vel.x *= 0.7; sh.vel.z *= 0.7; }
+      sh.m.rotation.x += sh.spin.x * dt; sh.m.rotation.y += sh.spin.y * dt;
       sh.m.scale.setScalar(sh.s * Math.min(1, sh.life / sh.max * 2));
     }
   }
 
-  // 冲击光环
+  // 冲击波光环
   const ringGeo = new THREE.RingGeometry(0.85, 1, 64);
   const rings = [];
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 24; i++) {
     const m = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }));
     m.rotation.x = -Math.PI / 2; m.visible = false; scene.add(m);
     rings.push({ m, life: 0, max: 1, size: 1, delay: 0 });
@@ -350,11 +522,9 @@
       r.m.visible = true;
       const t = 1 - r.life / r.max;
       r.m.scale.setScalar(0.5 + r.size * (1 - Math.pow(1 - t, 3)));
-      r.m.material.opacity = (1 - t) * 0.9;
+      r.m.material.opacity = (1 - t) * 0.8;
     }
   }
-
-  // 闪光
   const flashes = [];
   for (let i = 0; i < 24; i++) {
     const s = glowSprite(0xffffff, 1, 1);
@@ -378,11 +548,10 @@
       f.s.material.opacity = t;
     }
   }
-
-  // 激光轨迹
+  // 子弹轨迹
   const tracerGeo = new THREE.BoxGeometry(1, 1, 1);
   const tracers = [];
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 60; i++) {
     const m = new THREE.Mesh(tracerGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
     m.visible = false; scene.add(m);
     tracers.push({ m, life: 0, max: 0.1, w: 0.05 });
@@ -397,7 +566,7 @@
     tr.w = width;
     tr.m.scale.set(width, width, len);
     tr.m.material.color.set(color);
-    tr.life = tr.max = life || 0.09;
+    tr.life = tr.max = life || 0.07;
     tr.m.visible = true;
   }
   function updateTracers(dt) {
@@ -411,17 +580,20 @@
     }
   }
 
-  let shake = 0;
-  function explode(pos, color, size, silent) {
-    emit(pos, color, Math.round(22 * size), 9 * Math.sqrt(size), 0.9, 2);
-    emit(pos, 0xffffff, Math.round(8 * size), 6 * Math.sqrt(size), 0.5, 1);
-    emit(pos, 0xffaa33, Math.round(10 * size), 5 * Math.sqrt(size), 0.7, 3);
-    spawnRing(pos, color, 3 * size, 0.45 + size * 0.1);
-    spawnFlash(pos, color, 4 * size, 0.25 + size * 0.05);
-    spawnShards(pos, color, Math.min(16, 4 + Math.round(size * 3)), size);
+  let shake = 0, flashLightT = 0;
+  function explode(pos, size, silent) {
+    emit(pos, 0xff7a1a, Math.round(26 * size), 9 * Math.sqrt(size), 0.8, 3);
+    emit(pos, 0xffd23f, Math.round(14 * size), 7 * Math.sqrt(size), 0.6, 2);
+    emit(pos, 0xffffff, Math.round(6 * size), 5 * Math.sqrt(size), 0.35, 1);
+    if (pos.y < 2) spawnRing(pos, 0xff9a3a, 3 * size, 0.45 + size * 0.1);
+    spawnFlash(pos, 0xffb347, 5 * size, 0.3 + size * 0.05);
+    puff(tmpV.copy(pos).setY(Math.max(0.6, pos.y)), Math.min(10, 3 + Math.round(size * 2)), 2.5 * Math.sqrt(size), 0x6f675a, 2.2, size * 0.8);
+    spawnShards(pos, 0x5a4a3a, Math.min(14, 3 + Math.round(size * 3)), size);
+    flashLight.position.copy(pos).setY(pos.y + 1);
+    flashLight.intensity = 60 * size; flashLightT = 0.2;
     const d = camera.position.distanceTo(pos);
-    shake = Math.max(shake, Math.min(1, size * 2.5 / (d + 3)));
-    if (!silent) Sfx.boom(size >= 2.5);
+    shake = Math.max(shake, Math.min(1.2, size * 2.5 / (d + 3)));
+    if (!silent) Sfx.boom(size >= 2.2);
   }
 
   // 飘字
@@ -445,7 +617,7 @@
     const d = document.createElement('div');
     d.className = 'floater';
     d.textContent = text;
-    d.style.left = '50%'; d.style.top = '38%';
+    d.style.left = '50%'; d.style.top = '36%';
     d.style.color = color; d.style.fontSize = (size || 40) + 'px';
     floatersEl.appendChild(d);
     setTimeout(() => d.remove(), 1000);
@@ -455,10 +627,7 @@
     flashEl.style.transition = 'none';
     flashEl.style.background = color;
     flashEl.style.opacity = strength;
-    requestAnimationFrame(() => {
-      flashEl.style.transition = 'opacity .45s';
-      flashEl.style.opacity = 0;
-    });
+    requestAnimationFrame(() => { flashEl.style.transition = 'opacity .45s'; flashEl.style.opacity = 0; });
   }
   function hurtFlash() {
     hurtEl.style.transition = 'none';
@@ -483,359 +652,483 @@
     hitTimer = setTimeout(() => hitEl.classList.remove('on'), 90);
   }
 
-  // ================= 激光枪（第一人称手里的枪） =================
-  const gun = new THREE.Group();
-  camera.add(gun);
-  const GUN_BASE = new THREE.Vector3(0.2, -0.2, -0.72);
-  gun.position.copy(GUN_BASE);
-  gun.scale.setScalar(0.8);
-  const muzzle = new THREE.Object3D();
-  {
-    const metal = new THREE.MeshStandardMaterial({ color: 0x2b2f6a, metalness: 0.5, roughness: 0.4 });
-    const glowM = new THREE.MeshBasicMaterial({ color: 0x7ef9ff, toneMapped: false });
-    const goldM = new THREE.MeshStandardMaterial({ color: 0xffd21f, emissive: 0xffaa00, emissiveIntensity: 0.8, metalness: 0.6, roughness: 0.3 });
-    const parts = [
-      [new THREE.BoxGeometry(0.1, 0.12, 0.5), metal, 0, 0, 0],
-      [new THREE.BoxGeometry(0.012, 0.035, 0.4), glowM, 0.052, 0.01, -0.02],
-      [new THREE.BoxGeometry(0.012, 0.035, 0.4), glowM, -0.052, 0.01, -0.02],
-      [new THREE.BoxGeometry(0.04, 0.025, 0.3), metal, 0, 0.07, 0.02],
-      [new THREE.CylinderGeometry(0.032, 0.042, 0.28, 3), metal, 0, 0.0, -0.37, Math.PI / 2],
-      [new THREE.CylinderGeometry(0.044, 0.044, 0.025, 3), glowM, 0, 0.0, -0.51, Math.PI / 2],
-      [new THREE.ConeGeometry(0.035, 0.07, 3), goldM, 0, 0.11, -0.12],
-      [new THREE.BoxGeometry(0.07, 0.18, 0.09), metal, 0, -0.13, 0.12, -0.3],
-      [new THREE.BoxGeometry(0.08, 0.08, 0.1), metal, 0, -0.02, 0.27],
-    ];
-    parts.forEach(([geo, mat, x, y, z, rx], i) => {
-      const m = new THREE.Mesh(geo, mat);
-      m.position.set(x, y, z);
-      if (rx) m.rotation.x = rx;
-      m.renderOrder = 1000 + i;
-      gun.add(m);
-    });
-    gun.traverse(o => { if (o.material) { o.material.depthTest = false; o.material.depthWrite = false; } });
-    muzzle.position.set(0, 0, -0.55);
-    gun.rotation.y = 0.04;
-    gun.add(muzzle);
-  }
-  const muzzleFlash = glowSprite(0x7ef9ff, 0.5, 1);
-  muzzleFlash.material.depthTest = false;
-  muzzleFlash.renderOrder = 1100;
-  muzzleFlash.position.set(0, 0, -0.56);
-  muzzleFlash.visible = false;
-  gun.add(muzzleFlash);
-  const gunLight = new THREE.PointLight(0x7ef9ff, 0, 10, 2);
-  gunLight.position.set(0, 0, -0.7);
-  gun.add(gunLight);
-
-  // ================= 三角形队友 =================
-  const triGeo = new THREE.ConeGeometry(0.75, 1.7, 3);
-  triGeo.rotateX(Math.PI / 2);
-  triGeo.rotateZ(Math.PI);
-  triGeo.scale(1, 0.65, 1);
-  const triEdges = new THREE.EdgesGeometry(triGeo);
-  const edgeMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 });
-  const TROOP_COLORS = [0x2d7bff, 0x00e5ff, 0xb84dff, 0xffd21f, 0x3dffb0, 0xff6ad5];
-  function makeTri(color, scale) {
-    const g = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4, metalness: 0.2, roughness: 0.35, flatShading: true });
-    const mesh = new THREE.Mesh(triGeo, mat);
-    const edges = new THREE.LineSegments(triEdges, edgeMat);
-    const glow = glowSprite(color, 3.4, 0.5);
-    glow.position.y = -0.3;
-    g.add(mesh, edges, glow);
-    g.scale.setScalar(scale);
-    g.userData = { mesh, mat, glow, color };
-    return g;
-  }
-
-  // ================= 方块坏蛋 =================
-  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
-  const G = {
-    leg: box(0.26, 0.9, 0.3), boot: box(0.32, 0.16, 0.42), torso: box(0.8, 0.85, 0.5), belt: box(0.84, 0.12, 0.54),
-    badge: box(0.22, 0.22, 0.04), head: box(0.62, 0.58, 0.58), helmet: box(0.7, 0.18, 0.68), horn: new THREE.ConeGeometry(0.09, 0.32, 4),
-    arm: box(0.22, 0.7, 0.24), blaster: box(0.13, 0.15, 0.62), eye: new THREE.SphereGeometry(0.1, 12, 10), pupil: new THREE.SphereGeometry(0.05, 8, 6),
-    brow: box(0.2, 0.05, 0.05), mouth: box(0.26, 0.04, 0.03), droneBody: new THREE.SphereGeometry(0.7, 20, 14), droneRing: new THREE.TorusGeometry(1.05, 0.08, 6, 24),
-    crownSpike: new THREE.ConeGeometry(0.12, 0.4, 4), cape: new THREE.PlaneGeometry(1.0, 1.4),
+  // ================= 手里的枪（单独一层画，不会插进墙里） =================
+  const gunScene = new THREE.Scene();
+  const gunCam = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 10);
+  gunScene.add(new THREE.HemisphereLight(0xe8eeff, 0x6a5030, 1.3));
+  const gunSun = new THREE.DirectionalLight(0xffe3b8, 2.2); gunSun.position.set(1, 2, 1.5); gunScene.add(gunSun);
+  const gunFlashLight = new THREE.PointLight(0xffb050, 0, 3, 2); gunFlashLight.position.set(0.1, -0.05, -0.9); gunScene.add(gunFlashLight);
+  const M = {
+    black: new THREE.MeshStandardMaterial({ color: 0x3a3f46, roughness: 0.5, metalness: 0.5 }),
+    steel: new THREE.MeshStandardMaterial({ color: 0x6a7078, roughness: 0.3, metalness: 0.7 }),
+    olive: new THREE.MeshStandardMaterial({ color: 0x55652f, roughness: 0.75 }),
+    tan: new THREE.MeshStandardMaterial({ color: 0xb59a63, roughness: 0.7 }),
+    wood: new THREE.MeshStandardMaterial({ color: 0x8a5a2b, roughness: 0.7 }),
+    orange: new THREE.MeshStandardMaterial({ color: 0xff8a1f, roughness: 0.5 }),
+    lens: new THREE.MeshStandardMaterial({ color: 0x5fb4ff, emissive: 0x1a5fa0, emissiveIntensity: 0.6, roughness: 0.1, metalness: 0.5 }),
+    red: new THREE.MeshBasicMaterial({ color: 0xff3030, toneMapped: false }),
+    glove: new THREE.MeshStandardMaterial({ color: 0x3b3428, roughness: 0.9 }),
+    sleeve: new THREE.MeshStandardMaterial({ color: 0x2f5fbf, roughness: 0.9 }),
   };
-  const darkMat = new THREE.MeshStandardMaterial({ color: 0x1c1628, roughness: 0.7 });
-  const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const pupilMat = new THREE.MeshBasicMaterial({ color: 0xff1133, toneMapped: false });
-  const goldMat = new THREE.MeshStandardMaterial({ color: 0xffd21f, emissive: 0xffaa00, emissiveIntensity: 0.6, metalness: 0.7, roughness: 0.3 });
-  const capeMat = new THREE.MeshStandardMaterial({ color: 0x5a0018, side: THREE.DoubleSide, roughness: 0.8 });
+  function part(g, geo, mat, x, y, z, rx, ry, rz) {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    if (rx) m.rotation.x = rx; if (ry) m.rotation.y = ry; if (rz) m.rotation.z = rz;
+    g.add(m);
+    return m;
+  }
+  const B = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const CYL = (r, l, seg) => { const g = new THREE.CylinderGeometry(r, r, l, seg || 14); g.rotateX(Math.PI / 2); return g; };
+  function addHands(g, gripZ, foreZ, foreY) {
+    part(g, B(0.075, 0.075, 0.1), M.glove, 0.0, -0.1, gripZ);
+    part(g, B(0.085, 0.09, 0.4), M.sleeve, 0.02, -0.17, gripZ + 0.22, -0.35);
+    part(g, B(0.08, 0.06, 0.12), M.glove, -0.03, foreY, foreZ);
+    part(g, B(0.08, 0.085, 0.45), M.sleeve, -0.14, foreY - 0.12, foreZ + 0.24, -0.4, -0.5);
+  }
+  function makeRifle() {
+    const g = new THREE.Group();
+    part(g, B(0.07, 0.09, 0.42), M.black, 0, 0, 0);
+    part(g, B(0.078, 0.078, 0.27), M.olive, 0, 0.004, -0.33);
+    part(g, CYL(0.013, 0.24), M.steel, 0, 0.012, -0.56);
+    part(g, CYL(0.021, 0.05), M.black, 0, 0.012, -0.69);
+    part(g, B(0.05, 0.17, 0.085), M.black, 0, -0.12, -0.07, 0.25);
+    part(g, B(0.05, 0.12, 0.06), M.black, 0, -0.1, 0.1, -0.35);
+    part(g, B(0.06, 0.1, 0.22), M.olive, 0, -0.012, 0.3);
+    part(g, B(0.03, 0.02, 0.34), M.black, 0, 0.055, -0.08);
+    part(g, B(0.055, 0.05, 0.075), M.black, 0, 0.09, -0.03);
+    part(g, B(0.04, 0.034, 0.005), M.lens, 0, 0.093, -0.067);
+    const dot = new THREE.Sprite(sharedGlowMat(0xff3030, 1)); dot.scale.setScalar(0.012); dot.position.set(0, 0.093, -0.07); g.add(dot);
+    addHands(g, 0.1, -0.33, -0.05);
+    return { g, muzzle: new THREE.Vector3(0, 0.012, -0.73), sightY: 0.093, kick: 0.05 };
+  }
+  function makeShotgun() {
+    const g = new THREE.Group();
+    part(g, B(0.075, 0.095, 0.26), M.black, 0, 0, 0);
+    part(g, CYL(0.019, 0.62), M.steel, 0, 0.022, -0.42);
+    part(g, CYL(0.017, 0.48), M.black, 0, -0.022, -0.36);
+    part(g, B(0.07, 0.065, 0.2), M.wood, 0, -0.025, -0.32);
+    part(g, B(0.064, 0.115, 0.3), M.wood, 0, -0.035, 0.26, 0.12);
+    part(g, B(0.05, 0.11, 0.06), M.black, 0, -0.09, 0.08, -0.35);
+    part(g, B(0.012, 0.016, 0.012), M.red, 0, 0.047, -0.7);
+    addHands(g, 0.08, -0.32, -0.065);
+    return { g, muzzle: new THREE.Vector3(0, 0.022, -0.74), sightY: 0.05, kick: 0.12 };
+  }
+  function makeSniper() {
+    const g = new THREE.Group();
+    part(g, B(0.07, 0.085, 0.42), M.tan, 0, 0, 0);
+    part(g, CYL(0.014, 0.6), M.black, 0, 0.012, -0.5);
+    part(g, CYL(0.024, 0.06), M.black, 0, 0.012, -0.8);
+    part(g, CYL(0.032, 0.3), M.black, 0, 0.095, -0.03);
+    part(g, CYL(0.04, 0.06), M.black, 0, 0.095, -0.2);
+    part(g, CYL(0.038, 0.05), M.black, 0, 0.095, 0.13);
+    part(g, B(0.05, 0.005, 0.05), M.lens, 0, 0.095, -0.232, Math.PI / 2);
+    part(g, B(0.066, 0.125, 0.32), M.tan, 0, -0.02, 0.34);
+    part(g, B(0.05, 0.11, 0.06), M.black, 0, -0.1, 0.1, -0.35);
+    part(g, B(0.05, 0.09, 0.09), M.black, 0, -0.08, -0.08);
+    addHands(g, 0.1, -0.3, -0.05);
+    return { g, muzzle: new THREE.Vector3(0, 0.012, -0.84), sightY: 0.095, kick: 0.1 };
+  }
+  function makeRocket() {
+    const g = new THREE.Group();
+    part(g, CYL(0.075, 0.95, 18), M.olive, 0, 0, -0.1);
+    part(g, CYL(0.085, 0.07, 18), M.black, 0, 0, -0.58);
+    part(g, CYL(0.088, 0.1, 18), M.black, 0, 0, 0.38);
+    const head = new THREE.Group(); head.position.set(0, 0, -0.66); g.add(head);
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.24, 14), M.orange); cone.rotation.x = -Math.PI / 2; cone.position.z = -0.1; head.add(cone);
+    part(head, CYL(0.06, 0.08), M.olive, 0, 0, 0.03);
+    part(g, B(0.05, 0.13, 0.06), M.black, 0, -0.13, 0.02, -0.25);
+    part(g, B(0.05, 0.12, 0.06), M.black, 0, -0.12, -0.3, -0.2);
+    part(g, B(0.03, 0.08, 0.06), M.black, -0.09, 0.07, -0.18);
+    part(g, B(0.025, 0.02, 0.025), M.red, -0.09, 0.115, -0.18);
+    part(g, B(0.075, 0.075, 0.1), M.glove, 0, -0.18, 0.02);
+    part(g, B(0.085, 0.09, 0.4), M.sleeve, 0.02, -0.24, 0.24, -0.35);
+    return { g, muzzle: new THREE.Vector3(0, 0, -0.8), sightY: 0.115, kick: 0.15, head };
+  }
+  const WEAPONS = [
+    { id: 'rifle', name: '突击步枪', short: '步枪', mag: 30, reserve: Infinity, rate: 0.1, dmg: 1, pellets: 1, spread: 0.02, adsSpread: 0.004, reload: 1.4, fov: 55, recoil: 0.007, sfx: 'rifle', color: 0xffd27a, hip: [0.15, -0.15, -0.4], ads: [0.05, -0.1, -0.44] },
+    { id: 'shotgun', name: '霰弹枪', short: '霰弹', mag: 6, reserve: Infinity, rate: 0.7, dmg: 0.9, pellets: 8, spread: 0.075, adsSpread: 0.05, reload: 1.7, fov: 62, recoil: 0.035, sfx: 'shotgun', color: 0xffc04a, hip: [0.15, -0.15, -0.4], ads: [0.05, -0.11, -0.44] },
+    { id: 'sniper', name: '狙击枪', short: '狙击', mag: 5, reserve: Infinity, rate: 1.0, dmg: 9, pellets: 1, spread: 0.035, adsSpread: 0, reload: 2.0, fov: 20, recoil: 0.05, sfx: 'sniper', pierce: true, scope: true, color: 0xfff0b0, hip: [0.15, -0.15, -0.42], ads: [0.05, -0.1, -0.44] },
+    { id: 'rocket', name: '火箭筒', short: '火箭', mag: 1, reserve: 4, rate: 0.9, dmg: 14, pellets: 1, spread: 0.01, adsSpread: 0, reload: 1.6, fov: 60, recoil: 0.05, sfx: 'rocketFire', rocket: true, color: 0xff8a1f, hip: [0.17, -0.12, -0.4], ads: [0.1, -0.1, -0.44] },
+  ];
+  const gunModels = [makeRifle(), makeShotgun(), makeSniper(), makeRocket()];
+  const GS = 0.5; // 手里枪的大小
+  const gunRoot = new THREE.Group();
+  gunRoot.scale.setScalar(GS);
+  gunScene.add(gunRoot);
+  gunModels.forEach(m => { m.g.visible = false; gunRoot.add(m.g); });
+  const muzzleFlash = glowSprite(0xffc060, 0.35, 1);
+  muzzleFlash.visible = false;
+  gunRoot.add(muzzleFlash);
 
-  function addMesh(parent, geo, mat, x, y, z) {
+  // ================= 士兵模型 =================
+  const SG = {
+    leg: B(0.26, 0.9, 0.3), boot: B(0.3, 0.18, 0.42), torso: B(0.74, 0.82, 0.44), vest: B(0.82, 0.58, 0.52), belt: B(0.78, 0.1, 0.48),
+    head: B(0.5, 0.52, 0.5), helmet: new THREE.SphereGeometry(0.36, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), arm: B(0.2, 0.68, 0.22),
+    gun: B(0.11, 0.15, 0.72), gunMag: B(0.07, 0.2, 0.1), eye: new THREE.SphereGeometry(0.085, 10, 8), pupil: new THREE.SphereGeometry(0.045, 8, 6),
+    brow: B(0.2, 0.055, 0.05), visor: B(0.48, 0.12, 0.06), pouch: B(0.16, 0.16, 0.08), beret: new THREE.CylinderGeometry(0.33, 0.36, 0.12, 16),
+    glasses: B(0.19, 0.09, 0.04), medal: new THREE.CylinderGeometry(0.055, 0.055, 0.025, 12), epaulette: B(0.24, 0.05, 0.22), stache: B(0.3, 0.06, 0.05),
+    pack: B(0.5, 0.55, 0.24), band: B(0.54, 0.1, 0.54), mouth: B(0.22, 0.04, 0.03), armband: B(0.22, 0.1, 0.24),
+  };
+  const SM = {
+    dark: new THREE.MeshStandardMaterial({ color: 0x222226, roughness: 0.7 }),
+    boot: new THREE.MeshStandardMaterial({ color: 0x2a2219, roughness: 0.8 }),
+    gun: new THREE.MeshStandardMaterial({ color: 0x1e2023, roughness: 0.4, metalness: 0.6 }),
+    white: new THREE.MeshBasicMaterial({ color: 0xffffff }),
+    pupil: new THREE.MeshBasicMaterial({ color: 0x111111 }),
+    angry: new THREE.MeshStandardMaterial({ color: 0x9a1b1b, roughness: 0.6 }),
+    skin: new THREE.MeshStandardMaterial({ color: 0xf1c27d, roughness: 0.7 }),
+    villainSkin: new THREE.MeshStandardMaterial({ color: 0xd59a62, roughness: 0.7 }),
+    visor: new THREE.MeshBasicMaterial({ color: 0x7ef9ff, toneMapped: false }),
+    hvisor: new THREE.MeshBasicMaterial({ color: 0xff8a1f, toneMapped: false }),
+    gold: new THREE.MeshStandardMaterial({ color: 0xffd23f, emissive: 0xaa7700, emissiveIntensity: 0.4, metalness: 0.8, roughness: 0.3 }),
+    beret: new THREE.MeshStandardMaterial({ color: 0xc0392b, roughness: 0.8 }),
+    red: new THREE.MeshStandardMaterial({ color: 0xd93030, roughness: 0.6 }),
+    olive: new THREE.MeshStandardMaterial({ color: 0x56682f, roughness: 0.8 }),
+    tan: new THREE.MeshStandardMaterial({ color: 0xb89b6a, roughness: 0.85 }),
+    allyPants: new THREE.MeshStandardMaterial({ color: 0x27467a, roughness: 0.85 }),
+    blue: new THREE.MeshStandardMaterial({ color: 0x2f6bd8, roughness: 0.8 }),
+  };
+  function add(parent, geo, mat, x, y, z) {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
     parent.add(m);
     return m;
   }
-  function makeVillain(T) {
+  // kind: grunt | runner | heavy | boss | ally
+  function makeSoldier(kind) {
     const g = new THREE.Group();
-    const armor = new THREE.MeshStandardMaterial({ color: T.color, emissive: T.color, emissiveIntensity: 0.2, roughness: 0.45, metalness: 0.3, flatShading: true });
-    const v = { g, armor, legs: [], arms: [] };
-    if (T.drone) {
-      const body = new THREE.Group();
-      addMesh(body, G.droneBody, armor, 0, 0, 0);
-      const eyeW = addMesh(body, G.eye, whiteMat, 0, 0.05, 0.58); eyeW.scale.setScalar(3);
-      const p = addMesh(eyeW, G.pupil, pupilMat, 0, 0, 0.08); p.scale.setScalar(0.9);
-      const brow = addMesh(body, G.brow, darkMat, 0, 0.42, 0.6); brow.scale.set(2.2, 1.6, 1);
-      const ring = addMesh(body, G.droneRing, darkMat, 0, 0, 0); ring.rotation.x = Math.PI / 2;
-      addMesh(body, G.blaster, darkMat, 0, -0.6, 0.3);
-      body.add(glowSprite(T.color, 3, 0.4));
-      v.ring = ring;
-      g.add(body);
-      v.body = body;
-      return v;
-    }
+    const P = {
+      grunt: { uni: 0x7a2e2a, pants: 0x3d2b2b, vest: 0x3a3a3a, helmet: 0x2e2e2e },
+      runner: { uni: 0xc8641e, pants: 0x4a3322, vest: null, helmet: null },
+      heavy: { uni: 0x3b3f46, pants: 0x2a2d33, vest: 0x1f2226, helmet: 0x1d1f22 },
+      boss: { uni: 0x5c1f1f, pants: 0x2b1a1a, vest: null, helmet: null },
+      ally: { uni: 0x2f6bd8, pants: 0x27467a, vest: 0xb89b6a, helmet: 0x56682f },
+    }[kind];
+    const uni = new THREE.MeshStandardMaterial({ color: P.uni, roughness: 0.8 });
+    const flashMats = [uni];
+    const v = { g, uni, flashMats, legs: [], arms: [], baseColor: P.uni };
+    const pants = new THREE.MeshStandardMaterial({ color: P.pants, roughness: 0.85 });
+    flashMats.push(pants);
     for (const sx of [-1, 1]) {
-      const hip = new THREE.Group(); hip.position.set(sx * 0.22, 0.92, 0);
-      addMesh(hip, G.leg, darkMat, 0, -0.45, 0);
-      addMesh(hip, G.boot, armor, 0, -0.84, 0.05);
+      const hip = new THREE.Group(); hip.position.set(sx * 0.17, 0.92, 0);
+      add(hip, SG.leg, pants, 0, -0.45, 0);
+      add(hip, SG.boot, SM.boot, 0, -0.86, 0.05);
       g.add(hip); v.legs.push(hip);
     }
-    addMesh(g, G.torso, armor, 0, 1.35, 0);
-    addMesh(g, G.belt, darkMat, 0, 0.98, 0);
-    addMesh(g, G.badge, goldMat, 0, 1.45, 0.26);
-    addMesh(g, G.head, darkMat, 0, 2.05, 0);
-    addMesh(g, G.helmet, armor, 0, 2.38, 0);
-    for (const sx of [-1, 1]) {
-      const h = addMesh(g, G.horn, armor, sx * 0.25, 2.6, 0); h.rotation.z = -sx * 0.4;
-      const e = addMesh(g, G.eye, whiteMat, sx * 0.14, 2.1, 0.28); e.scale.set(1.2, 1, 1);
-      addMesh(e, G.pupil, pupilMat, 0, -0.01, 0.07);
-      const b = addMesh(g, G.brow, armor, sx * 0.14, 2.24, 0.3); b.rotation.z = sx * 0.5;
+    add(g, SG.torso, uni, 0, 1.33, 0);
+    add(g, SG.belt, SM.dark, 0, 0.96, 0);
+    if (P.vest) {
+      const vm = new THREE.MeshStandardMaterial({ color: P.vest, roughness: 0.85 });
+      flashMats.push(vm);
+      const vest = add(g, SG.vest, vm, 0, 1.43, 0);
+      if (kind === 'heavy') vest.scale.set(1.12, 1.25, 1.15);
+      for (const px of [-0.2, 0, 0.2]) add(g, SG.pouch, vm, px, 1.2, 0.28);
     }
-    const mouth = addMesh(g, G.mouth, whiteMat, 0, 1.9, 0.3); mouth.rotation.z = 0.15;
+    const villain = kind !== 'ally';
+    // 头
+    const headMat = kind === 'ally' ? SM.skin : kind === 'boss' ? SM.villainSkin : SM.dark; // 坏蛋小兵戴黑色头套
+    add(g, SG.head, headMat, 0, 2.02, 0);
+    if (kind === 'ally') {
+      add(g, SG.visor, SM.visor, 0, 2.08, 0.25);
+      add(g, SG.mouth, SM.dark, 0, 1.88, 0.255);
+      add(g, SG.pack, SM.olive, 0, 1.4, -0.36);
+    } else {
+      for (const sx of [-1, 1]) {
+        if (kind === 'boss') {
+          add(g, SG.glasses, SM.pupil, sx * 0.12, 2.07, 0.26);
+          const b = add(g, SG.brow, SM.pupil, sx * 0.12, 2.17, 0.27); b.rotation.z = sx * 0.45;
+        } else if (kind === 'heavy') {
+          // 重甲兵用一条橙色护目镜
+        } else {
+          const e = add(g, SG.eye, SM.white, sx * 0.11, 2.05, 0.24); e.scale.set(1.2, 1, 0.8);
+          add(e, SG.pupil, SM.pupil, -sx * 0.01, -0.01, 0.07);
+          const b = add(g, SG.brow, SM.angry, sx * 0.11, 2.15, 0.26); b.rotation.z = sx * 0.5;
+        }
+      }
+      if (kind === 'heavy') add(g, SG.visor, SM.hvisor, 0, 2.06, 0.26);
+      if (kind === 'boss') { add(g, SG.stache, SM.pupil, 0, 1.92, 0.27); }
+      if (kind !== 'boss' && kind !== 'heavy') { const mo = add(g, SG.mouth, SM.white, 0, 1.88, 0.255); mo.rotation.z = 0.15; }
+    }
+    if (P.helmet) {
+      const hm = new THREE.MeshStandardMaterial({ color: P.helmet, roughness: 0.6 });
+      flashMats.push(hm);
+      const h = add(g, SG.helmet, hm, 0, 2.2, 0); h.scale.set(1.05, 0.9, 1.05);
+      if (kind === 'heavy') h.scale.set(1.2, 1.05, 1.2);
+    }
+    if (kind === 'runner') add(g, SG.band, SM.red, 0, 2.2, 0);
+    if (kind === 'boss') {
+      const b = add(g, SG.beret, SM.beret, 0.04, 2.33, 0); b.rotation.z = -0.18;
+      add(g, SG.epaulette, SM.gold, -0.42, 1.76, 0); add(g, SG.epaulette, SM.gold, 0.42, 1.76, 0);
+      for (let i = 0; i < 3; i++) { const m = add(g, SG.medal, SM.gold, -0.18 + i * 0.12, 1.5, 0.23); m.rotation.x = Math.PI / 2; }
+    }
+    // 手臂
+    const armMat = kind === 'heavy' ? flashMats[2] || uni : uni;
     for (const sx of [-1, 1]) {
-      const sh = new THREE.Group(); sh.position.set(sx * 0.52, 1.7, 0);
-      addMesh(sh, G.arm, armor, 0, -0.32, 0);
-      if (sx > 0) { addMesh(sh, G.blaster, darkMat, 0, -0.62, 0.22); const tip = addMesh(sh, G.badge, pupilMat, 0, -0.62, 0.54); tip.scale.set(0.6, 0.6, 1); }
+      const sh = new THREE.Group(); sh.position.set(sx * 0.47, 1.68, 0);
+      add(sh, SG.arm, armMat, 0, -0.3, 0);
+      if (villain && sx < 0 && kind !== 'boss') add(sh, SG.armband, SM.red, 0, -0.12, 0);
       g.add(sh); v.arms.push(sh);
     }
-    v.arms[1].rotation.x = -1.35; // 举枪
-    if (T.boss) {
-      for (let i = 0; i < 5; i++) {
-        const sp = addMesh(g, G.crownSpike, goldMat, (i - 2) * 0.15, 2.62, 0.3 - Math.abs(i - 2) * 0.05);
-        sp.rotation.x = -0.2;
-      }
-      const cape = addMesh(g, G.cape, capeMat, 0, 1.1, -0.32);
-      cape.rotation.x = 0.12;
-      v.cape = cape;
-      const aura = glowSprite(0xff0044, 6, 0.4);
-      aura.position.y = 1.4;
-      g.add(aura);
+    if (kind !== 'runner') {
+      const hand = new THREE.Group(); hand.position.set(0, -0.62, 0); hand.rotation.x = 1.35;
+      add(hand, SG.gun, SM.gun, 0, 0.02, 0.22);
+      add(hand, SG.gunMag, SM.gun, 0, -0.12, 0.2);
+      if (kind === 'heavy') hand.scale.set(1.5, 1.5, 1.3);
+      v.arms[1].add(hand);
+      v.arms[1].rotation.x = -1.35;
+      v.arms[0].rotation.set(-1.2, 0, 0.4);
+      v.armed = true;
+      v.hand = hand;
     }
+    shadowify(g);
     return v;
+  }
+  function makeDrone() {
+    const g = new THREE.Group();
+    const body = new THREE.Group(); g.add(body);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x4a4f55, roughness: 0.4, metalness: 0.6 });
+    add(body, B(0.9, 0.32, 0.9), mat, 0, 0, 0);
+    const a1 = add(body, B(2.0, 0.08, 0.12), SM.dark, 0, 0.05, 0); a1.rotation.y = Math.PI / 4;
+    const a2 = add(body, B(2.0, 0.08, 0.12), SM.dark, 0, 0.05, 0); a2.rotation.y = -Math.PI / 4;
+    const rotors = [];
+    const rotGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.02, 16);
+    const rotMat = new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.45 });
+    for (const [x, z] of [[0.7, 0.7], [-0.7, 0.7], [0.7, -0.7], [-0.7, -0.7]]) {
+      const r = add(body, rotGeo, rotMat, x, 0.14, z);
+      add(r, B(0.8, 0.01, 0.06), SM.dark, 0, 0, 0);
+      rotors.push(r);
+    }
+    const eye = add(body, new THREE.SphereGeometry(0.16, 12, 8), basicMat(0xff3030), 0, -0.02, 0.45);
+    eye.add(glowSprite(0xff3030, 1.2, 0.7));
+    add(body, B(0.1, 0.1, 0.5), SM.gun, 0, -0.24, 0.2);
+    shadowify(g);
+    return { g, body, rotors, uni: mat, flashMats: [mat], legs: [], arms: [], baseColor: 0x4a4f55 };
   }
 
   const ETYPES = {
-    grunt:  { name: '小坏蛋', hp: 4, speed: 3.6, scale: 1, color: 0xd9304a, score: 10, xp: 1, dmg: 1, shoot: [2.6, 4.2], keep: 9 },
-    runner: { name: '冲锋坏蛋', hp: 3, speed: 7.2, scale: 0.9, color: 0xff8a1f, score: 15, xp: 1, dmg: 1 },
-    drone:  { name: '坏蛋无人机', hp: 3, speed: 5, scale: 1, color: 0xff2dc8, score: 20, xp: 2, dmg: 1, shoot: [2.2, 3.4], keep: 12, drone: true },
-    tank:   { name: '重甲坏蛋', hp: 22, speed: 2.3, scale: 1.55, color: 0x7a3dff, score: 50, xp: 4, dmg: 2, shoot: [3, 4], keep: 7, burst: 3 },
-    boss:   { name: '方块大魔王', hp: 320, speed: 2.1, scale: 2.8, color: 0xb3001b, score: 1000, xp: 20, dmg: 3, shoot: [2.4, 3], boss: true },
+    grunt:  { name: '坏蛋步兵', hp: 4, speed: 3.4, scale: 1, score: 10, xp: 1, dmg: 7, shoot: [1.8, 3.2], keep: 14, bullet: 21 },
+    runner: { name: '坏蛋突击兵', hp: 3, speed: 6.8, scale: 0.95, score: 15, xp: 1, dmg: 12 },
+    drone:  { name: '侦察无人机', hp: 3, speed: 5, scale: 1, score: 20, xp: 2, dmg: 6, shoot: [1.8, 3], keep: 13, drone: true, bullet: 20 },
+    heavy:  { name: '重甲兵', hp: 24, speed: 2.2, scale: 1.35, score: 50, xp: 4, dmg: 6, shoot: [2.6, 3.6], keep: 11, burst: 4, bullet: 20 },
+    boss:   { name: '坏蛋司令', hp: 420, speed: 2.4, scale: 2.2, score: 1000, xp: 20, dmg: 10, shoot: [2.0, 2.6], keep: 12, boss: true, bullet: 16 },
   };
 
   // ================= 游戏数据 =================
   let S = {};
-  let state = 'title'; // title | playing | paused | menu | dead | over
+  let state = 'title'; // title | playing | paused | menu | dead | over | complete
   let gameId = 0;
-  let allies = [], enemies = [], pickups = [], orbs = [], grenades = [];
-  let score = 0, wave = 0, level = 1, xp = 0, kills = 0, headshots = 0;
-  let hp = 10, invuln = 0, combo = 0, comboTimer = 0, grenadeCount = 3;
-  let spawnQueue = [], spawnTimer = 0, waveActive = false, recruitTimer = 0;
-  let pendingLevels = 0, revivesLeft = 2, boss = null, fireCool = 0, grenadeCool = 0;
-  let best = 0;
-  try { best = +localStorage.getItem('tri_best') || 0; } catch (e) {}
+  let allies = [], enemies = [], pickups = [], ebullets = [], grenades = [], rockets = [];
+  let score = 0, level = 1, xp = 0, kills = 0, headshots = 0, missionKills = 0, missionTime = 0;
+  let hp = 100, invuln = 0, combo = 0, comboTimer = 0, grenadeCount = 3, regenWait = 0;
+  let pendingLevels = 0, revivesLeft = 2, revivesUsed = 0, boss = null, fireCool = 0, grenadeCool = 0;
+  let curW = 0, ammo = [], reloadT = 0, switchT = 0, aimT = 0, aimHeld = false, aimToggle = false, autoReloadT = -1;
+  let mission = null, missionNo = 1, tier = 1, mst = null;
+  let best = 0, progress = 0, starsSaved = {};
+  try {
+    best = +localStorage.getItem('ts_best') || 0;
+    progress = +localStorage.getItem('ts_progress') || 0;
+    starsSaved = JSON.parse(localStorage.getItem('ts_stars') || '{}') || {};
+  } catch (e) {}
   $('bestScore').textContent = best;
   let sens = 1;
-  try { sens = +localStorage.getItem('tri_sens') || 1; } catch (e) {}
+  try { sens = +localStorage.getItem('ts_sens') || 1; } catch (e) {}
   $('sens').value = sens;
-  $('sens').addEventListener('input', e => { sens = +e.target.value; try { localStorage.setItem('tri_sens', sens); } catch (er) {} });
+  $('sens').addEventListener('input', e => { sens = +e.target.value; try { localStorage.setItem('ts_sens', sens); } catch (er) {} });
 
-  function resetStats() {
-    S = { speed: 8.5, fireRate: 1, dmg: 1, pellets: 1, maxHp: 10, magnet: 6, gRadius: 7, gDmg: 1, maxGrenades: 6, jumps: 1, maxAllies: 8 };
+  function resetRun() {
+    S = { speed: 7.5, fireRate: 1, dmg: 1, magMul: 1, reloadSpd: 1, maxHp: 100, gRadius: 7, gDmg: 1, maxGrenades: 6, maxRockets: 8, jumps: 1, maxAllies: 6, regen: 0, allyCount: 1 };
+    score = 0; level = 1; xp = 0; kills = 0; headshots = 0; grenadeCount = 3;
+    Learn.resetSession();
+    ammo = WEAPONS.map(W => ({ mag: W.mag, res: W.reserve }));
   }
-  resetStats();
+  resetRun();
+  function magSize(i) { const W = WEAPONS[i]; return W.rocket ? W.mag : Math.round(W.mag * S.magMul); }
+  function unlocked(i) { return tier > 1 || i === 0 || progress >= i; }
 
-  const player = { pos: new THREE.Vector3(0, 0, 6), vel: new THREE.Vector3(), yaw: 0, pitch: 0, onGround: true, jumpsUsed: 0, bob: 0 };
+  const player = { pos: new THREE.Vector3().copy(SPAWN), vel: new THREE.Vector3(), yaw: 0, pitch: 0, onGround: true, jumpsUsed: 0, bob: 0 };
   const fwd = new THREE.Vector3(0, 0, -1), right = new THREE.Vector3(1, 0, 0);
   function eyePos(out) { return out.set(player.pos.x, player.pos.y + 1.65, player.pos.z); }
 
   // ---------- 队友 ----------
-  function addAlly(fromPos) {
+  const SLOTS = [[-2.2, 2.4], [2.2, 2.4], [-3.6, 4.8], [3.6, 4.8], [0, 5.2], [0, 7.6]];
+  function addAlly(fromPos, silent) {
     if (allies.length >= S.maxAllies) { score += 50; return false; }
-    const col = TROOP_COLORS[Math.floor(Math.random() * TROOP_COLORS.length)];
-    const g = makeTri(col, 0.9);
-    g.position.copy(fromPos || player.pos);
-    g.position.y = 1;
-    scene.add(g);
-    allies.push({ g, color: col, cool: Math.random(), phase: Math.random() * 6 });
-    emit(g.position, col, 18, 5, 0.6, 3);
+    const v = makeSoldier('ally');
+    const p = fromPos ? fromPos.clone() : player.pos.clone().addScaledVector(fwd, -3);
+    p.y = 0; pushOut(p, 0.6);
+    v.g.position.copy(p);
+    scene.add(v.g);
+    allies.push({ v, g: v.g, hp: 40, maxHp: 40, cool: Math.random(), phase: Math.random() * 6, hurtT: 0, speed: 0 });
+    if (!silent) puff(tmpV.copy(p).setY(1), 4, 1.6, 0xffffff, 0.9);
     return true;
   }
-  function killAlly(i) {
+  function removeAlly(i, retreat) {
     const a = allies[i];
-    explode(a.g.position, a.color, 0.7);
+    if (retreat) {
+      puff(tmpV.copy(a.g.position).setY(1), 6, 2, 0xffffff, 1);
+      floatText(tmpV.copy(a.g.position).setY(2.6), '队友撤退了，别担心！', '#7fc8ff', 20);
+    }
     scene.remove(a.g);
-    a.g.userData.mat.dispose();
-    a.g.userData.glow.material.dispose();
+    a.v.flashMats.forEach(m => m.dispose());
     allies.splice(i, 1);
+  }
+  function hurtAlly(i, dmg) {
+    const a = allies[i];
+    a.hp -= dmg; a.hurtT = 4;
+    a.v.flash = 0.1;
+    if (a.hp <= 0) removeAlly(i, true);
   }
 
   // ---------- 坏蛋 ----------
   let enemyUid = 0;
   function spawnEnemy(type, pos, idle) {
     const T = ETYPES[type];
-    const v = makeVillain(T);
+    const v = T.drone ? makeDrone() : makeSoldier(type);
     const s = T.scale;
     v.g.scale.setScalar(s);
-    v.g.position.set(pos.x, T.drone ? 3.2 : 0, pos.z);
+    v.g.position.set(pos.x, T.drone ? 4.2 : 0, pos.z);
     scene.add(v.g);
-    const hpMul = 1 + Math.max(0, wave - 1) * 0.15;
+    const hpMul = tier > 1 ? 1.6 : 1;
     const e = {
       id: ++enemyUid, type, T, v, g: v.g, s,
       hp: Math.ceil(T.hp * hpMul), maxHp: Math.ceil(T.hp * hpMul),
-      speed: T.speed * (1 + Math.min(0.4, wave * 0.02)) * rand(0.9, 1.1),
-      r: (T.drone ? 0.8 : 0.55) * s, flash: 0, kb: new THREE.Vector3(),
-      shootT: T.shoot ? rand(1.5, T.shoot[1]) : 0, atk: 0, phase: Math.random() * 6, spawnIn: idle ? 0 : 0.6, idle: !!idle,
-      strafe: Math.random() < 0.5 ? 1 : -1, strafeT: rand(1, 3), burst: 0, burstT: 0, summonT: 6,
+      speed: T.speed * (tier > 1 ? 1.15 : 1) * rand(0.9, 1.1),
+      r: (T.drone ? 0.8 : 0.5) * s, flash: 0, kb: new THREE.Vector3(),
+      shootT: T.shoot ? rand(1.2, T.shoot[1]) : 0, atk: 0, phase: Math.random() * 6, spawnIn: idle ? 0 : 0.5, idle: !!idle,
+      strafe: Math.random() < 0.5 ? 1 : -1, strafeT: rand(1, 3), burst: 0, burstT: 0, summonT: 9, attackN: 0,
+      target: null, targetT: 0,
     };
-    if (!idle) { spawnRing(v.g.position, 0xff3355, 3 * s, 0.6); emit(tmpV.copy(v.g.position).setY(1), 0xff3355, 25, 5, 0.8, 6); }
+    if (!idle) puff(tmpV.copy(v.g.position).setY(1), 5, 2, 0xd6c3a0, 1.2);
     enemies.push(e);
     return e;
   }
-  // 命中判定：身体两个球 + 头一个球
   function hitSpheres(e) {
     const p = e.g.position, s = e.s;
     if (e.T.drone) return [[p.x, p.y, p.z, 0.85 * s, false]];
-    return [[p.x, p.y + 1.3 * s, p.z, 0.62 * s, false], [p.x, p.y + 0.55 * s, p.z, 0.45 * s, false], [p.x, p.y + 2.1 * s, p.z, 0.45 * s, true]];
+    return [[p.x, p.y + 1.33 * s, p.z, 0.55 * s, false], [p.x, p.y + 0.55 * s, p.z, 0.42 * s, false], [p.x, p.y + 2.06 * s, p.z, 0.38 * s, true]];
   }
   function removeEnemy(e) {
     scene.remove(e.g);
-    e.v.armor.dispose();
+    e.v.flashMats.forEach(m => m.dispose());
     const i = enemies.indexOf(e);
     if (i >= 0) enemies.splice(i, 1);
     if (e === boss) { boss = null; $('bossbox').classList.add('hidden'); }
   }
-  function damageEnemy(e, dmg, at, head) {
-    if (e.hp <= 0) return;
+  function poofEnemy(e) {
+    const c = tmpV.copy(e.g.position).setY(e.T.drone ? e.g.position.y : 1.2 * e.s);
+    puff(c, 5, 2 * e.s, 0xffffff, 1);
+    emit(c, 0xffe15a, 10, 5, 0.7, 3);
+    removeEnemy(e);
+  }
+  function damageEnemy(e, dmg, at, head, fromPlayer) {
+    if (e.hp <= 0 || e.idle) return;
     e.hp -= dmg;
     e.flash = 0.08;
-    e.kb.add(tmpV3.set(e.g.position.x - player.pos.x, 0, e.g.position.z - player.pos.z).normalize().multiplyScalar(e.T.boss ? 0.2 : 1.6));
-    if (at) floatText(at, (head ? '💥' : '') + Math.round(dmg * 10) / 10, head ? '#ffe15a' : '#fff', head ? 30 : 22);
-    if (e.hp <= 0) killEnemy(e, head);
+    if (fromPlayer !== false) e.kb.add(tmpV3.set(e.g.position.x - player.pos.x, 0, e.g.position.z - player.pos.z).normalize().multiplyScalar(e.T.boss ? 0.15 : 1.2));
+    if (e.hp <= 0) killEnemy(e, head, fromPlayer !== false);
   }
-  function killEnemy(e, head) {
+  function killEnemy(e, head, byPlayer) {
     const p = e.g.position.clone();
-    const center = p.clone().setY(p.y + (e.T.drone ? 0 : 1.2 * e.s));
+    const center = p.clone().setY(e.T.drone ? p.y : p.y + 1.2 * e.s);
     kills++;
+    if (!e.minion) missionKills++;
     combo++; comboTimer = 3;
     const mult = 1 + Math.floor(combo / 5);
     const pts = e.T.score * mult * (head ? 2 : 1);
     score += pts;
-    if (head) { headshots++; centerText('爆头！+' + pts, '#ffe15a', 44); Sfx.headshot(); }
+    if (head && byPlayer) { headshots++; centerText('爆头！+' + pts, '#ffd23f', 44); Sfx.headshot(); }
+    else floatText(center, '+' + pts, '#ffd23f', 24);
     if (e.T.boss) {
-      for (let i = 0; i < 7; i++) setTimeout(() => {
-        if (state === 'title') return;
-        explode(new THREE.Vector3(p.x + rand(-3, 3), rand(1, 7), p.z + rand(-3, 3)), [0xff0044, 0xffe15a, 0xff8a1f][i % 3], 3);
-      }, i * 160);
+      const id = gameId;
+      for (let i = 0; i < 8; i++) setTimeout(() => {
+        if (id !== gameId) return;
+        explode(new THREE.Vector3(p.x + rand(-3, 3), rand(1, 6), p.z + rand(-3, 3)), 2.4);
+      }, i * 170);
       screenFlash('#fff', 0.8);
-      banner('打败大魔王！', '超级厉害！奖励 3 个队友 + 3 颗手榴弹 🎉');
-      for (let i = 0; i < 3; i++) addAlly(p);
-      grenadeCount = Math.min(S.maxGrenades + 3, grenadeCount + 3);
       shake = 1.5;
+      puff(center, 10, 4, 0xffffff, 2);
+    } else if (e.T.drone) {
+      explode(center, 1, true);
+      Sfx.boom(false);
     } else {
-      explode(center, e.T.color, 1.2 * e.s);
-      emit(center, 0xffe15a, 12, 6, 0.8, 4); // 星星
+      // 不血腥：坏蛋“噗”地变成一团烟和星星
+      puff(center, 6, 1.8 * e.s, 0xffffff, 1.1);
+      emit(center, 0xffe15a, 16, 6, 0.9, 4);
+      spawnShards(center, e.v.baseColor, 6, e.s);
+      Sfx.hit();
     }
-    if ([5, 10, 15, 20, 30, 50].includes(combo)) centerText(`${combo} 连杀！`, '#ff7a18', 52);
-    for (let i = 0; i < e.T.xp; i++) spawnPickup('gem', center);
+    if ([5, 10, 15, 20, 30].includes(combo)) centerText(`${combo} 连杀！`, '#ff8a1f', 52);
+    for (let i = 0; i < e.T.xp; i++) spawnPickup('medal', center);
     if (!e.T.boss) {
       const roll = Math.random();
-      if (roll < 0.1) spawnPickup('grenade', center);
-      else if (roll < 0.15) spawnPickup('heart', center);
-      else if (roll < 0.19) spawnPickup('recruit', center);
+      if (roll < 0.08) spawnPickup('ammo', center);
+      else if (roll < 0.15) spawnPickup('medkit', center);
     }
     removeEnemy(e);
   }
 
-  // 敌人的能量弹
-  const orbGeo = new THREE.IcosahedronGeometry(0.22, 1);
-  function fireOrb(from, to, speed, color) {
-    let o = orbs.find(b => !b.alive);
-    if (!o) {
-      if (orbs.length > 120) return;
-      const mesh = new THREE.Mesh(orbGeo, basicMat(0xff2255));
-      const gl = new THREE.Sprite(sharedGlowMat(0xff2255, 0.9)); gl.scale.setScalar(1.6); mesh.add(gl);
+  // ---------- 敌人的子弹（发光的橙色曳光弹） ----------
+  const ebGeo = new THREE.BoxGeometry(0.09, 0.09, 0.9);
+  function fireBullet(from, to, speed, dmg, big) {
+    let b = ebullets.find(x => !x.alive);
+    if (!b) {
+      if (ebullets.length > 140) return;
+      const mesh = new THREE.Mesh(ebGeo, basicMat(0xffa040));
+      const gl = new THREE.Sprite(sharedGlowMat(0xff7a1a, 0.8)); gl.scale.setScalar(1.1); mesh.add(gl);
       scene.add(mesh);
-      o = { mesh, gl, vel: new THREE.Vector3(), life: 0, alive: false };
-      orbs.push(o);
+      b = { mesh, gl, vel: new THREE.Vector3(), life: 0, alive: false, dmg: 5 };
+      ebullets.push(b);
     }
-    o.alive = true; o.mesh.visible = true;
-    o.mesh.material = basicMat(color || 0xff2255);
-    o.gl.material = sharedGlowMat(color || 0xff2255, 0.9);
-    o.mesh.position.copy(from);
-    o.vel.copy(to).sub(from).normalize().multiplyScalar(speed);
-    o.life = 6;
+    b.alive = true; b.mesh.visible = true;
+    b.mesh.position.copy(from);
+    b.vel.copy(to).sub(from).normalize().multiplyScalar(speed);
+    b.mesh.lookAt(tmpV.copy(from).add(b.vel));
+    b.mesh.scale.setScalar(big ? 2.2 : 1);
+    b.life = 4; b.dmg = dmg;
     Sfx.enemyShot();
   }
 
   // ---------- 道具 ----------
-  const gemGeo = new THREE.OctahedronGeometry(0.25, 0);
-  const gemMat = new THREE.MeshStandardMaterial({ color: 0xffe15a, emissive: 0xffc400, emissiveIntensity: 1, flatShading: true });
-  const beamGeo = new THREE.CylinderGeometry(0.5, 1.1, 4.5, 16, 1, true);
-  const heartTex = emojiTex('❤️'), bombTex = emojiTex('💣');
-  const crateGeo = box(0.7, 0.5, 0.5);
-  const crateMat = new THREE.MeshStandardMaterial({ color: 0x3a5a2a, emissive: 0xffaa00, emissiveIntensity: 0.15, roughness: 0.6 });
+  const medalGeo = new THREE.CylinderGeometry(0.28, 0.28, 0.07, 20); medalGeo.rotateX(Math.PI / 2);
+  const medalMat = new THREE.MeshStandardMaterial({ color: 0xffd23f, emissive: 0xcc8800, emissiveIntensity: 0.7, metalness: 0.8, roughness: 0.25 });
+  const medalStar = new THREE.MeshBasicMaterial({ color: 0xfff5c0, toneMapped: false });
+  const starShape = (() => { const s = new THREE.Shape(); for (let i = 0; i < 10; i++) { const r = i % 2 ? 0.08 : 0.19, a = i / 10 * Math.PI * 2 + Math.PI / 2; const x = Math.cos(a) * r, y = Math.sin(a) * r; if (i) s.lineTo(x, y); else s.moveTo(x, y); } return new THREE.ShapeGeometry(s); })();
+  const kitGeo = B(0.7, 0.45, 0.5);
+  const kitMat = new THREE.MeshStandardMaterial({ map: medkitTex, roughness: 0.6 });
+  const ammoMat = new THREE.MeshStandardMaterial({ map: ammoTex, roughness: 0.7 });
   function spawnPickup(kind, pos) {
     let g;
-    if (kind === 'gem') {
-      g = new THREE.Mesh(gemGeo, gemMat);
-      const s = new THREE.Sprite(sharedGlowMat(0xffc400, 0.6)); s.scale.setScalar(1.2); g.add(s);
-    } else if (kind === 'recruit') {
-      g = makeTri(0x5dff8a, 1.0);
-      const beam = new THREE.Mesh(beamGeo, new THREE.MeshBasicMaterial({ color: 0x5dff8a, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }));
-      beam.position.y = 1.2;
-      g.add(beam);
-    } else if (kind === 'grenade') {
-      g = new THREE.Mesh(crateGeo, crateMat);
-      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: bombTex, transparent: true, depthWrite: false }));
-      s.scale.setScalar(1); s.position.y = 0.75; g.add(s);
-      const gl = new THREE.Sprite(sharedGlowMat(0xffaa00, 0.5)); gl.scale.setScalar(2.2); g.add(gl);
+    if (kind === 'medal') {
+      g = new THREE.Mesh(medalGeo, medalMat);
+      const st = new THREE.Mesh(starShape, medalStar); st.position.z = 0.04; g.add(st);
+      const st2 = new THREE.Mesh(starShape, medalStar); st2.position.z = -0.04; st2.rotation.y = Math.PI; g.add(st2);
+      const s = new THREE.Sprite(sharedGlowMat(0xffc400, 0.45)); s.scale.setScalar(1.3); g.add(s);
     } else {
-      g = new THREE.Sprite(new THREE.SpriteMaterial({ map: heartTex, transparent: true, depthWrite: false }));
-      g.scale.setScalar(1.4);
+      g = new THREE.Mesh(kitGeo, kind === 'medkit' ? kitMat : ammoMat);
+      const s = new THREE.Sprite(sharedGlowMat(kind === 'medkit' ? 0xff6060 : 0xffd23f, 0.45)); s.scale.setScalar(2); g.add(s);
     }
-    const spread = kind === 'gem' ? 1.2 : 0.3;
+    const spread = kind === 'medal' ? 1.2 : 0.3;
     g.position.set(pos.x + rand(-spread, spread), Math.max(0.8, pos.y), pos.z + rand(-spread, spread));
     scene.add(g);
-    pickups.push({ kind, g, t: Math.random() * 6, life: kind === 'gem' ? 30 : 35, vel: new THREE.Vector3(rand(-3, 3), 5, rand(-3, 3)) });
+    pickups.push({ kind, g, t: Math.random() * 6, life: kind === 'medal' ? 30 : 40, vel: new THREE.Vector3(rand(-3, 3), 5, rand(-3, 3)) });
   }
-  function removePickup(i) {
-    const p = pickups[i];
-    scene.remove(p.g);
-    if (p.kind === 'recruit') { p.g.userData.mat.dispose(); p.g.userData.glow.material.dispose(); p.g.children[3].material.dispose(); }
-    if (p.kind === 'heart') p.g.material.dispose();
-    if (p.kind === 'grenade') p.g.children[0].material.dispose();
-    pickups.splice(i, 1);
-  }
+  function removePickup(i) { scene.remove(pickups[i].g); pickups.splice(i, 1); }
 
   // ---------- 手榴弹 ----------
-  const grenGeo = new THREE.IcosahedronGeometry(0.16, 0);
-  const grenMat = new THREE.MeshStandardMaterial({ color: 0x3dff8a, emissive: 0x3dff8a, emissiveIntensity: 0.8, flatShading: true });
+  const grenGeo = new THREE.SphereGeometry(0.14, 10, 8);
+  const grenMat = new THREE.MeshStandardMaterial({ color: 0x4f5d2f, roughness: 0.6 });
   let gunKick = 0, gunDip = 0, muzzleT = 0;
   function throwGrenade() {
     if (state !== 'playing' || grenadeCool > 0) return;
-    if (grenadeCount <= 0) { centerText('没有手榴弹了！打坏蛋能捡到 💣', '#ffb347', 26); return; }
+    if (grenadeCount <= 0) { centerText('没有手榴弹了！捡弹药箱 📦', '#ffb347', 26); return; }
     grenadeCount--;
-    grenadeCool = 0.45;
+    grenadeCool = 0.5;
     gunDip = 1;
     Sfx.throwIt();
-    bumpGrenadeBox();
     let gr = grenades.find(x => !x.alive);
     if (!gr) {
       const mesh = new THREE.Mesh(grenGeo, grenMat);
-      const gl = glowSprite(0x3dff8a, 1.4, 0.9);
+      const gl = glowSprite(0xff3030, 0.7, 0.9);
       mesh.add(gl);
       scene.add(mesh);
       gr = { mesh, gl, vel: new THREE.Vector3(), fuse: 0, alive: false };
@@ -848,25 +1141,42 @@
     gr.fuse = 1.6;
     gr.alive = true; gr.mesh.visible = true;
   }
-  function grenadeBlast(pos) {
-    const r = S.gRadius;
-    explode(pos, 0x3dff8a, 3.2);
-    explode(pos, 0xffaa33, 2.2, true);
-    spawnRing(pos, 0xffe15a, r * 1.3, 0.6);
-    spawnRing(pos, 0x3dff8a, r, 0.5, 0.08);
-    emit(pos, 0xffe15a, 80, 16, 1, 6);
-    shake = Math.max(shake, 1.2);
+  // 爆炸伤害（玩家自己的爆炸不会伤到自己和队友）
+  function blastDamage(pos, r, dmg) {
     for (const e of enemies.slice()) {
       if (e.idle || e.spawnIn > 0) continue;
-      const c = new THREE.Vector3().copy(e.g.position); c.y += e.T.drone ? 0 : 1.2 * e.s;
+      const c = tmpV2.copy(e.g.position); if (!e.T.drone) c.y += 1.2 * e.s;
       const d = c.distanceTo(pos);
       if (d < r + e.r) {
         const f = 1 - Math.min(1, d / (r + e.r)) * 0.5;
-        e.kb.add(new THREE.Vector3().copy(e.g.position).sub(pos).setY(0).normalize().multiplyScalar(e.T.boss ? 3 : 18 * f));
-        damageEnemy(e, 14 * S.gDmg * f * (e.T.boss ? 0.6 : 1), c);
+        e.kb.add(new THREE.Vector3().copy(e.g.position).sub(pos).setY(0).normalize().multiplyScalar(e.T.boss ? 2 : 14 * f));
+        damageEnemy(e, dmg * f * (e.T.boss ? 0.6 : 1), c.clone());
       }
     }
-    for (const o of orbs) if (o.alive && o.mesh.position.distanceTo(pos) < r) { o.alive = false; o.mesh.visible = false; }
+    for (const b of ebullets) if (b.alive && b.mesh.position.distanceTo(pos) < r) { b.alive = false; b.mesh.visible = false; }
+    const id = gameId;
+    for (const o of obstacles.slice()) {
+      if (o.kind !== 'barrel') continue;
+      if (Math.hypot(o.x - pos.x, o.z - pos.z) < r * 0.8) setTimeout(() => { if (id === gameId) damageBarrel(o, 99); }, 120);
+    }
+  }
+  function grenadeBlast(pos) {
+    explode(pos, 2.8);
+    spawnRing(pos, 0xffd23f, S.gRadius * 1.3, 0.6);
+    emit(pos, 0xffd23f, 50, 14, 0.9, 5);
+    shake = Math.max(shake, 1);
+    blastDamage(pos, S.gRadius, 14 * S.gDmg);
+  }
+  function damageBarrel(o, dmg) {
+    if (obstacles.indexOf(o) < 0) return;
+    o.hp -= dmg;
+    if (o.hp > 0) { emit(tmpV.set(o.x, 0.8, o.z), 0xffc04a, 6, 4, 0.3, 1); return; }
+    removeOb(o);
+    const p = new THREE.Vector3(o.x, 0.8, o.z);
+    explode(p, 2.6);
+    emit(p, 0xff5a1a, 40, 12, 1, 6);
+    blastDamage(p, 5.5, 12);
+    centerText('💥 油桶爆炸！', '#ff8a1f', 34);
   }
   function updateGrenades(dt) {
     for (const gr of grenades) {
@@ -876,19 +1186,16 @@
       const p = gr.mesh.position;
       p.addScaledVector(gr.vel, dt);
       gr.mesh.rotation.x += dt * 10; gr.mesh.rotation.y += dt * 7;
-      gr.gl.material.opacity = Math.floor(gr.fuse * (gr.fuse < 0.6 ? 16 : 6)) % 2 ? 1 : 0.3;
-      if (p.y < 0.16) { p.y = 0.16; gr.vel.y *= -0.45; gr.vel.x *= 0.65; gr.vel.z *= 0.65; }
+      gr.gl.material.opacity = Math.floor(gr.fuse * (gr.fuse < 0.6 ? 16 : 6)) % 2 ? 1 : 0.2;
+      if (p.y < 0.14) { p.y = 0.14; gr.vel.y *= -0.45; gr.vel.x *= 0.65; gr.vel.z *= 0.65; }
       const o = insideBox(p);
       if (o) {
-        // 从最近的面弹出来
         const px = o.hx - Math.abs(p.x - o.x), pz = o.hz - Math.abs(p.z - o.z), py = o.h - p.y;
         if (py < px && py < pz) { p.y = o.h + 0.01; gr.vel.y = Math.abs(gr.vel.y) * 0.45; gr.vel.x *= 0.7; gr.vel.z *= 0.7; }
         else if (px < pz) { p.x = o.x + Math.sign(p.x - o.x || 1) * (o.hx + 0.01); gr.vel.x *= -0.5; }
         else { p.z = o.z + Math.sign(p.z - o.z || 1) * (o.hz + 0.01); gr.vel.z *= -0.5; }
       }
-      const d = Math.hypot(p.x, p.z);
-      if (d > R) { p.x *= R / d; p.z *= R / d; gr.vel.x *= -0.5; gr.vel.z *= -0.5; }
-      if (Math.random() < 0.6) emit(p, 0x3dff8a, 1, 0.5, 0.3, 0.5);
+      if (Math.random() < 0.5) puff(p, 1, 0.4, 0xbbbbbb, 0.5, 0.05);
       let touch = false;
       for (const e of enemies) {
         if (e.idle || e.spawnIn > 0) continue;
@@ -903,47 +1210,164 @@
       }
     }
   }
-  const grenadeBoxEl = $('grenadeBox');
-  function bumpGrenadeBox() {
-    grenadeBoxEl.classList.remove('bump'); void grenadeBoxEl.offsetWidth; grenadeBoxEl.classList.add('bump');
+
+  // ---------- 火箭弹 ----------
+  const rocketGeo = CYL(0.07, 0.6);
+  const rocketMat = new THREE.MeshStandardMaterial({ color: 0x8a9a3a, roughness: 0.6 });
+  function fireRocket(from, dir) {
+    let r = rockets.find(x => !x.alive);
+    if (!r) {
+      const mesh = new THREE.Mesh(rocketGeo, rocketMat);
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.2, 10), M.orange); tip.rotation.x = -Math.PI / 2; tip.position.z = -0.4; mesh.add(tip);
+      const gl = glowSprite(0xff9a3a, 1.4, 0.9); gl.position.z = 0.35; mesh.add(gl);
+      scene.add(mesh);
+      r = { mesh, vel: new THREE.Vector3(), life: 0, alive: false };
+      rockets.push(r);
+    }
+    r.alive = true; r.mesh.visible = true;
+    r.mesh.position.copy(from);
+    r.vel.copy(dir).multiplyScalar(36);
+    r.mesh.lookAt(tmpV.copy(from).sub(dir)); // 圆锥朝 -z，所以反着看
+    r.life = 3;
+  }
+  function rocketBlast(p) {
+    explode(p, 3.2);
+    spawnRing(p, 0xffd23f, 9, 0.6);
+    emit(p, 0xffd23f, 60, 15, 1, 6);
+    shake = Math.max(shake, 1.1);
+    blastDamage(p, 6, WEAPONS[3].dmg * S.dmg);
+  }
+  function updateRockets(dt) {
+    for (const r of rockets) {
+      if (!r.alive) continue;
+      r.life -= dt;
+      const p = r.mesh.position;
+      const steps = 3;
+      let boom = false;
+      for (let k = 0; k < steps && !boom; k++) {
+        p.addScaledVector(r.vel, dt / steps);
+        if (p.y <= 0.05 || insideBox(p) || Math.abs(p.x) > HALF || Math.abs(p.z) > HALF || r.life <= 0) boom = true;
+        for (const e of enemies) {
+          if (boom) break;
+          if (e.idle || e.spawnIn > 0) continue;
+          for (const s of hitSpheres(e)) if ((p.x - s[0]) ** 2 + (p.y - s[1]) ** 2 + (p.z - s[2]) ** 2 < (s[3] + 0.25) ** 2) { boom = true; break; }
+        }
+      }
+      puff(p, 1, 0.7, 0xd8d0c0, 0.8, 0.05);
+      emit(p, 0xff9a3a, 2, 1.5, 0.25, 0);
+      if (boom) {
+        r.alive = false; r.mesh.visible = false;
+        const o = insideBox(p);
+        if (o && o.kind === 'barrel') damageBarrel(o, 99);
+        rocketBlast(p.clone().setY(Math.max(0.3, p.y)));
+      }
+    }
   }
 
   // ================= 开枪 =================
-  function shoot() {
-    fireCool = 0.15 / S.fireRate;
+  const camRightV = new THREE.Vector3(), camUpV = new THREE.Vector3();
+  function muzzleWorld(out) {
+    const k = aimT;
+    return out.set(lerp(0.2, 0.08, k), lerp(-0.18, -0.13, k), -0.85).applyMatrix4(camera.matrixWorld);
+  }
+  function tryFire() {
+    if (switchT > 0 || reloadT > 0 || fireCool > 0) return;
+    const W = WEAPONS[curW], A = ammo[curW];
+    if (A.mag <= 0) {
+      if (A.res > 0) startReload();
+      else { Sfx.empty(); centerText('没有火箭弹了！捡弹药箱 📦 或者换枪', '#ffb347', 24); }
+      fireCool = 0.35;
+      return;
+    }
+    A.mag--;
+    fireCool = W.rate / (W.rocket || W.scope ? 1 : S.fireRate);
     gunKick = 1;
-    muzzleT = 0.05;
-    Sfx.blaster();
+    muzzleT = W.rocket ? 0.08 : 0.05;
+    Sfx[W.sfx]();
+    camera.updateMatrixWorld();
     const eye = eyePos(new THREE.Vector3());
     const aim = new THREE.Vector3();
     camera.getWorldDirection(aim);
-    const from = new THREE.Vector3();
-    muzzle.getWorldPosition(from);
-    let anyHit = false, anyHead = false;
-    for (let k = 0; k < S.pellets; k++) {
-      const spread = S.pellets > 1 ? 0.06 : 0.008;
+    const from = muzzleWorld(new THREE.Vector3());
+    flashLight.position.copy(from); flashLight.intensity = W.rocket ? 30 : 12; flashLightT = 0.05;
+    const moving = Math.hypot(player.vel.x, player.vel.z) > 2 || !player.onGround;
+    const spread = lerp(W.spread, W.adsSpread, aimT) * (moving ? 1.6 : 1);
+    if (W.rocket) {
       const dir = aim.clone().add(new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(spread)).normalize();
-      let bestT = rayObstacles(eye, dir, 90), bestE = null, bestHead = false;
-      for (const e of enemies) {
-        if (e.idle || e.spawnIn > 0) continue;
-        for (const s of hitSpheres(e)) {
-          const t = raySphere(eye, dir, tmpV2.set(s[0], s[1], s[2]), s[3] * 1.15); // 小小的瞄准辅助
-          if (t > 0 && t < bestT) { bestT = t; bestE = e; bestHead = s[4]; }
+      fireRocket(from, dir);
+      puff(from, 3, 1, 0xd8d0c0, 0.8);
+      gunModels[3].head.visible = false;
+    } else {
+      let anyHit = false, anyHead = false;
+      const assist = isTouch ? 1.3 : 1.12;
+      for (let k = 0; k < W.pellets; k++) {
+        const dir = aim.clone().add(new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(spread)).normalize();
+        const rh = rayObstacles(eye, dir, 120);
+        const wallT = rh.t, wallOb = rh.ob;
+        const hits = [];
+        for (const e of enemies) {
+          if (e.idle || e.spawnIn > 0) continue;
+          let bt = Infinity, bh = false;
+          for (const s of hitSpheres(e)) {
+            const t = raySphere(eye, dir, tmpV2.set(s[0], s[1], s[2]), s[3] * assist);
+            if (t > 0 && t < bt) { bt = t; bh = s[4]; }
+          }
+          if (bt < wallT) hits.push([bt, e, bh]);
+        }
+        hits.sort((a, b) => a[0] - b[0]);
+        const use = W.pierce ? hits : hits.slice(0, 1);
+        const endT = use.length && !W.pierce ? use[0][0] : wallT;
+        const hitP = eye.clone().addScaledVector(dir, endT);
+        if (k < 3) spawnTracer(from, hitP, W.color, W.scope ? 0.05 : 0.035, W.scope ? 0.15 : 0.06);
+        for (const [t, e, head] of use) {
+          anyHit = true; anyHead = anyHead || head;
+          const hp2 = eye.clone().addScaledVector(dir, t);
+          emit(hp2, 0xffe15a, 6, 5, 0.3, 1);
+          damageEnemy(e, W.dmg * S.dmg * (head ? 2 : 1), hp2, head);
+        }
+        if (!use.length || W.pierce) {
+          if (wallT < 120) {
+            emit(hitP, 0xffc04a, 4, 4, 0.25, 2);
+            if (k % 3 === 0) puff(hitP, 1, 0.4, 0xc8b08a, 0.5, 0.05);
+            if (wallOb && wallOb.kind === 'barrel') damageBarrel(wallOb, W.dmg * S.dmg);
+          }
         }
       }
-      const hitP = eye.clone().addScaledVector(dir, bestT);
-      spawnTracer(from, hitP, k % 2 ? 0xb84dff : 0x7ef9ff, 0.07, 0.09);
-      if (bestE) {
-        anyHit = true; anyHead = anyHead || bestHead;
-        emit(hitP, bestE.T.color, 8, 6, 0.4, 1);
-        emit(hitP, 0xffffff, 4, 4, 0.25, 1);
-        damageEnemy(bestE, S.dmg * (bestHead ? 2 : 1), hitP, bestHead);
-      } else if (bestT < 90) {
-        emit(hitP, 0x7ef9ff, 6, 4, 0.35, 2);
-      }
+      if (anyHit) { hitMarker(anyHead); Sfx.hit(); }
     }
-    if (anyHit) { hitMarker(anyHead); Sfx.hit(); }
-    player.pitch = Math.min(1.45, player.pitch + 0.006);
+    player.pitch = Math.min(1.45, player.pitch + W.recoil * (1 - aimT * 0.5));
+    player.yaw += rand(-1, 1) * W.recoil * 0.3;
+    if (A.mag <= 0 && A.res > 0) autoReloadT = 0.25;
+  }
+  function startReload() {
+    const A = ammo[curW], W = WEAPONS[curW];
+    if (reloadT > 0 || switchT > 0 || A.mag >= magSize(curW) || A.res <= 0) return;
+    reloadT = W.reload / S.reloadSpd;
+    Sfx.reload();
+  }
+  function finishReload() {
+    const A = ammo[curW];
+    const need = magSize(curW) - A.mag;
+    const take = Math.min(need, A.res);
+    A.mag += take;
+    if (A.res !== Infinity) A.res -= take;
+    if (WEAPONS[curW].rocket) gunModels[3].head.visible = A.mag > 0;
+  }
+  function switchWeapon(i) {
+    if (state !== 'playing' && state !== 'menu') return;
+    if (i === curW || !unlocked(i)) { if (!unlocked(i) && state === 'playing') centerText(`🔒 完成第 ${i} 个任务解锁 ${WEAPONS[i].name}`, '#ffb347', 24); return; }
+    curW = i;
+    reloadT = 0; autoReloadT = -1;
+    switchT = 0.35;
+    Sfx.reload();
+    gunModels.forEach((m, k) => { m.g.visible = k === i; });
+    gunModels[3].head.visible = ammo[3].mag > 0;
+  }
+  function cycleWeapon(dir) {
+    for (let k = 1; k <= 4; k++) {
+      const i = (curW + dir * k + 8) % 4;
+      if (unlocked(i)) { switchWeapon(i); return; }
+    }
   }
 
   // ================= 输入 =================
@@ -960,7 +1384,7 @@
   function exitLock() { if (document.pointerLockElement) document.exitPointerLock(); }
   document.addEventListener('pointerlockchange', () => {
     locked = document.pointerLockElement === renderer.domElement;
-    if (!locked) mouseDown = false;
+    if (!locked) { mouseDown = false; aimHeld = false; }
     if (!locked && state === 'playing' && !lockFallback) pause();
   });
   document.addEventListener('pointerlockerror', () => { lockFallback = true; });
@@ -970,7 +1394,13 @@
     Sfx.init();
     keys[e.code] = true;
     if (e.code === 'Space') { e.preventDefault(); if (state === 'playing') jump(); }
-    if (e.code === 'KeyG' || e.code === 'KeyQ') { if (state === 'playing') throwGrenade(); }
+    if (state === 'playing') {
+      if (e.code === 'KeyG') throwGrenade();
+      if (e.code === 'KeyR') startReload();
+      if (e.code === 'KeyQ') cycleWeapon(1);
+      const n = { Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3 }[e.code];
+      if (n != null) switchWeapon(n);
+    }
     if (e.code === 'KeyP' || (e.code === 'Escape' && lockFallback)) {
       if (state === 'playing') pause(); else if (state === 'paused') resume();
     }
@@ -981,29 +1411,30 @@
     }
   });
   addEventListener('keyup', e => { keys[e.code] = false; });
-  addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseDown = false; if (state === 'playing') pause(); });
+  addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseDown = false; aimHeld = false; if (state === 'playing') pause(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'playing') pause(); });
-  addEventListener('contextmenu', e => { if (state === 'playing' || state === 'paused') e.preventDefault(); });
+  addEventListener('contextmenu', e => { if (state !== 'title') e.preventDefault(); });
   renderer.domElement.addEventListener('mousedown', e => {
     Sfx.init();
     if (state !== 'playing' || isTouch) return;
     if (needLock()) { requestLock(); return; }
     if (e.button === 0) mouseDown = true;
-    if (e.button === 2) throwGrenade();
+    if (e.button === 2) aimHeld = true;
   });
-  addEventListener('mouseup', e => { if (e.button === 0) mouseDown = false; });
+  addEventListener('mouseup', e => { if (e.button === 0) mouseDown = false; if (e.button === 2) aimHeld = false; });
+  addEventListener('wheel', e => { if (state === 'playing') cycleWeapon(e.deltaY > 0 ? 1 : -1); }, { passive: true });
   addEventListener('mousemove', e => {
     if (state !== 'playing' || isTouch) return;
     if (!locked && !lockFallback) return;
     look(e.movementX || 0, e.movementY || 0, 0.0022 * sens);
   });
   function look(dx, dy, k) {
+    k *= camera.fov / BASE_FOV; // 开镜时瞄准慢一点，好瞄
     player.yaw -= dx * k;
     player.pitch = clamp(player.pitch - dy * k, -1.45, 1.45);
   }
   $('clickToPlay').addEventListener('click', () => { Sfx.init(); requestLock(); });
 
-  // 触控：左边摇杆，右边拖动瞄准，按钮开火/手榴弹/跳
   const joy = { id: null, x: 0, y: 0 };
   const lookT = { id: null, x: 0, y: 0 };
   const joyBase = $('joyBase'), joyKnob = $('joyKnob');
@@ -1058,10 +1489,143 @@
   holdBtn('tFire', () => { touchFire = true; }, () => { touchFire = false; });
   holdBtn('tGrenade', () => throwGrenade());
   holdBtn('tJump', () => { if (state === 'playing') jump(); });
+  holdBtn('tReload', () => { if (state === 'playing') startReload(); });
+  holdBtn('tSwitch', () => { if (state === 'playing') cycleWeapon(1); });
+  holdBtn('tAim', () => { aimToggle = !aimToggle; $('tAim').classList.toggle('on', aimToggle); });
 
   function jump() {
     if (player.onGround) { player.vel.y = 9; player.onGround = false; player.jumpsUsed = 1; Sfx.jump(); }
-    else if (player.jumpsUsed < S.jumps) { player.vel.y = 8.5; player.jumpsUsed++; Sfx.jump(); emit(player.pos, 0x7ef9ff, 15, 4, 0.4, 0); }
+    else if (player.jumpsUsed < S.jumps) { player.vel.y = 8.5; player.jumpsUsed++; Sfx.jump(); puff(player.pos, 2, 0.8, 0xffffff, 0.5); }
+  }
+
+  // ================= 任务 =================
+  const MISSIONS = [
+    { name: '新兵训练', icon: '🎯', type: 'kill', total: 8, pool: [['grunt', 1]], maxAlive: 4, gap: 2.2,
+      desc: '消灭 8 个坏蛋步兵', brief: '欢迎加入雷霆特战队！坏蛋军团闯进了我们的沙漠基地。先熟悉你的突击步枪，躲在箱子和沙袋后面，把他们赶出去！' },
+    { name: '夺回油库', icon: '🛢️', type: 'kill', total: 14, pool: [['grunt', 3], ['runner', 2]], maxAlive: 6, gap: 1.8,
+      desc: '消灭 14 个坏蛋', brief: '坏蛋想偷走基地的油！小心那些红色油桶：打中会爆炸，可以用它们一下子炸飞一群坏蛋。突击兵会冲过来，用霰弹枪对付他们！' },
+    { name: '营救队友', icon: '🔓', type: 'rescue', pool: [['grunt', 3], ['runner', 2], ['drone', 1]], maxAlive: 6, gap: 2.4,
+      desc: '救出 3 名队友，坐直升机撤离', brief: '我们的 3 名队友被关进了笼子！跑到笼子旁边站一会儿就能救出他们。救出来的队友会和你并肩作战。新拿到的狙击枪按右键开镜，能远远地打坏蛋。最后跑回直升机撤离！' },
+    { name: '摧毁雷达', icon: '📡', type: 'demo', pool: [['grunt', 3], ['runner', 2], ['drone', 2], ['heavy', 1]], maxAlive: 7, gap: 2.2,
+      desc: '炸掉 2 座雷达，然后撤离', brief: '坏蛋用雷达偷看我们的行动。站在雷达旁边安放炸药，倒数结束就会“轰”的一声炸掉！新拿到的火箭筒专门对付穿厚盔甲的重甲兵。' },
+    { name: '坚守阵地', icon: '🛡️', type: 'survive', time: 75, pool: [['grunt', 4], ['runner', 3], ['drone', 2], ['heavy', 1]], maxAlive: 9, gap: 1.5,
+      desc: '守住基地 75 秒', brief: '坏蛋军团从四面八方冲过来了！守住基地 75 秒，援军就到。看准坏蛋扎堆的地方，用火箭筒和手榴弹！' },
+    { name: '击败坏蛋司令', icon: '👑', type: 'boss', pool: [['grunt', 2], ['runner', 1]], maxAlive: 5, gap: 4,
+      desc: '打败坏蛋司令', brief: '坏蛋军团的司令亲自来了！他会放出一圈子弹，记得跳起来躲开。打败他，基地就安全了！' },
+  ];
+  const CAGE_SPOTS = [[-32, -33], [32, -30], [-26, 2]];
+  const DISH_SPOTS = [[-28, -38], [28, -38]];
+  let objectives = [];
+
+  function missionTitle() { return `${tier > 1 ? '困难 · ' : ''}任务 ${missionNo}：${mission.name}`; }
+
+  // 笼子（关着队友）
+  function makeCage(x, z) {
+    const g = new THREE.Group();
+    const bar = new THREE.CylinderGeometry(0.05, 0.05, 2.4, 6);
+    const barMat = stdMat('cagebar', { color: 0x3a3a3a, metalness: 0.7, roughness: 0.4 });
+    const bars = new THREE.Group();
+    for (let i = 0; i < 16; i++) {
+      const side = Math.floor(i / 4), k = (i % 4) / 4 - 0.5 + 0.125;
+      const bx = [k * 2.3, 1.15, -k * 2.3, -1.15][side], bz = [1.15, k * 2.3, -1.15, -k * 2.3][side];
+      const m = new THREE.Mesh(bar, barMat); m.position.set(bx, 1.2, bz); bars.add(m);
+    }
+    const top = new THREE.Mesh(B(2.5, 0.12, 2.5), barMat); top.position.y = 2.4; bars.add(top);
+    const base = new THREE.Mesh(B(2.5, 0.12, 2.5), barMat); base.position.y = 0.06; bars.add(base);
+    g.add(bars);
+    const hostage = makeSoldier('ally');
+    hostage.g.position.y = -0.35;
+    hostage.legs.forEach(l => { l.rotation.x = -1.4; });
+    hostage.arms.forEach(a => { a.rotation.set(-2.6, 0, 0); });
+    g.add(hostage.g);
+    shadowify(g);
+    const ob = addOb(x, z, 2.5, 2.5, 2.45, g, 'cage');
+    g.position.y = 0;
+    return { kind: 'cage', x, z, g, bars, hostage, ob, prog: 0, done: false };
+  }
+  function makeDish(x, z) {
+    const g = new THREE.Group();
+    const mat = stdMat('dish', { color: 0xd8d8d0, metalness: 0.5, roughness: 0.4 });
+    const base = new THREE.Mesh(B(2.2, 2.6, 2.2), stdMat('dishbase', { map: concreteTex, roughness: 0.9 })); base.position.y = 1.3; g.add(base);
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.2, 1.6, 8), mat); mast.position.y = 3.4; g.add(mast);
+    const head = new THREE.Group(); head.position.y = 4.2; g.add(head);
+    const dish = new THREE.Mesh(new THREE.SphereGeometry(1.6, 20, 10, 0, Math.PI * 2, 0, Math.PI / 3), new THREE.MeshStandardMaterial({ color: 0xe8e8e0, metalness: 0.4, roughness: 0.4, side: THREE.DoubleSide }));
+    dish.rotation.x = -Math.PI / 2 - 0.5; head.add(dish);
+    const horn = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.4, 6), mat); horn.rotation.x = -0.5 + Math.PI / 2; horn.position.set(0, 0.35, 0.6); head.add(horn);
+    const light = glowSprite(0xff2020, 1.4, 0.9); light.position.y = 5.2; g.add(light);
+    shadowify(g);
+    const ob = addOb(x, z, 2.2, 2.2, 2.6, g, 'dish');
+    g.position.y = 0;
+    return { kind: 'dish', x, z, g, head, light, ob, prog: 0, planted: false, fuse: 0, done: false, beep: 0 };
+  }
+  function clearObjectives() {
+    for (const o of objectives) {
+      removeOb(o.ob);
+      if (o.hostage) o.hostage.flashMats.forEach(m => m.dispose());
+    }
+    objectives = [];
+  }
+  function resetBarrels() {
+    for (const o of obstacles.slice()) if (o.kind === 'barrel') removeOb(o);
+    BARREL_SPOTS.forEach(([x, z]) => barrel(x, z));
+  }
+
+  // ---------- 直升机 ----------
+  const heli = (() => {
+    const g = new THREE.Group();
+    const olive = stdMat('heli', { color: 0x4f5d2f, roughness: 0.6, metalness: 0.2 });
+    const dark = stdMat('helidark', { color: 0x2a2f22, roughness: 0.6 });
+    const glass = new THREE.MeshStandardMaterial({ color: 0x8fd0ff, roughness: 0.1, metalness: 0.4, transparent: true, opacity: 0.75 });
+    const body = new THREE.Mesh(B(2.3, 2.0, 4.6), olive); body.position.set(0, 1.7, 0.2); g.add(body);
+    const nose = new THREE.Mesh(new THREE.SphereGeometry(1.15, 16, 12), olive); nose.scale.set(1, 0.88, 1.2); nose.position.set(0, 1.6, -2.1); g.add(nose);
+    const cockpit = new THREE.Mesh(new THREE.SphereGeometry(1.0, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2), glass); cockpit.scale.set(1.02, 0.8, 1.15); cockpit.position.set(0, 1.85, -2.2); cockpit.rotation.x = -0.6; g.add(cockpit);
+    const boom = new THREE.Mesh(B(0.55, 0.55, 5.2), olive); boom.position.set(0, 2.1, 4.9); g.add(boom);
+    const fin = new THREE.Mesh(B(0.15, 1.5, 1.0), olive); fin.position.set(0, 2.9, 7.3); g.add(fin);
+    const stab = new THREE.Mesh(B(2.0, 0.1, 0.6), olive); stab.position.set(0, 2.1, 6.8); g.add(stab);
+    const cowl = new THREE.Mesh(B(1.3, 0.55, 2.0), dark); cowl.position.set(0, 2.95, 0.6); g.add(cowl);
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.5, 8), dark); mast.position.set(0, 3.4, 0.3); g.add(mast);
+    const rotor = new THREE.Group(); rotor.position.set(0, 3.65, 0.3); g.add(rotor);
+    for (let i = 0; i < 2; i++) { const bl = new THREE.Mesh(B(10.8, 0.05, 0.34), dark); bl.rotation.y = i * Math.PI / 2; rotor.add(bl); }
+    const tail = new THREE.Group(); tail.position.set(0.18, 2.9, 7.4); g.add(tail);
+    for (let i = 0; i < 2; i++) { const bl = new THREE.Mesh(B(0.04, 1.6, 0.16), dark); bl.rotation.x = i * Math.PI / 2; tail.add(bl); }
+    for (const sx of [-1, 1]) {
+      const skid = new THREE.Mesh(CYL(0.07, 4.6, 8), dark); skid.position.set(sx * 1.15, 0.08, 0); g.add(skid);
+      for (const z of [-1.2, 1.2]) { const st = new THREE.Mesh(B(0.08, 0.7, 0.08), dark); st.position.set(sx * 1.05, 0.45, z); st.rotation.z = sx * 0.25; g.add(st); }
+      const emb = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.9), new THREE.MeshStandardMaterial({ map: flagTex, roughness: 0.8 }));
+      emb.position.set(sx * 1.16, 1.9, 0.9); emb.rotation.y = sx * Math.PI / 2; g.add(emb);
+      const door = new THREE.Mesh(B(0.02, 1.3, 1.4), dark); door.position.set(sx * 1.16, 1.5, -0.6); g.add(door);
+    }
+    const beacon = glowSprite(0x6ee36a, 2.2, 0.9); beacon.position.set(0, 4.2, 0.3); beacon.visible = false; g.add(beacon);
+    shadowify(g);
+    scene.add(g);
+    return { g, rotor, tail, beacon, mode: 'landed', t: 0, spin: 0 };
+  })();
+  function heliLand() { heli.mode = 'landed'; heli.g.visible = true; heli.g.position.copy(PAD); heli.g.rotation.set(0, 0, 0); heli.spin = 1; }
+  function heliLeave() { heli.mode = 'leave'; heli.t = 0; heli.g.visible = true; }
+  function heliArrive() { heli.mode = 'arrive'; heli.t = 0; heli.g.visible = true; heli.beacon.visible = true; Sfx.wave(); }
+  function updateHeli(dt) {
+    heli.t += dt;
+    const g = heli.g;
+    if (heli.mode === 'leave') {
+      const t = heli.t;
+      heli.spin = Math.min(1, heli.spin + dt);
+      if (t > 1) {
+        const k = t - 1;
+        g.position.set(PAD.x, Math.min(18, k * k * 2.2), PAD.z + Math.max(0, k - 1.5) ** 2 * 6);
+        g.rotation.x = Math.min(0.25, Math.max(0, k - 1.5) * 0.15);
+      }
+      if (t > 9) { heli.mode = 'gone'; g.visible = false; }
+    } else if (heli.mode === 'arrive') {
+      const T = 6, t = Math.min(1, heli.t / T);
+      const e = 1 - Math.pow(1 - t, 3);
+      g.position.set(PAD.x + Math.sin(t * Math.PI) * 6, lerp(22, 0, Math.min(1, e * 1.05)), lerp(PAD.z + 120, PAD.z, e));
+      g.rotation.set(-0.2 * (1 - t), 0, Math.sin(t * Math.PI) * -0.15);
+      heli.spin = 1;
+      if (t >= 1) { heli.mode = 'landed'; g.position.copy(PAD); g.rotation.set(0, 0, 0); banner('直升机到了！', '快跑上直升机撤离！🚁'); }
+    }
+    heli.rotor.rotation.y += dt * 22 * heli.spin;
+    heli.tail.rotation.x += dt * 30 * heli.spin;
+    if (heli.beacon.visible) heli.beacon.material.opacity = 0.4 + Math.abs(Math.sin(heli.t * 4)) * 0.6;
   }
 
   // ================= 界面按钮 =================
@@ -1083,9 +1647,14 @@
   bind('soundToggle2', () => { Sfx.setSound(!Sfx.soundOn); refreshToggles(); });
   bind('musicToggle', () => { Sfx.setMusic(!Sfx.musicOn); refreshToggles(); });
   bind('musicToggle2', () => { Sfx.setMusic(!Sfx.musicOn); refreshToggles(); });
-  bind('startBtn', () => newGame());
-  bind('againBtn', () => newGame());
+  bind('startBtn', () => showMissions());
+  bind('mBack', () => { $('missions').classList.add('hidden'); $('title').classList.remove('hidden'); });
+  bind('brGo', () => startMission(false));
+  bind('cpNext', () => nextMission());
+  bind('cpHome', () => toTitle());
+  bind('againBtn', () => startMission(true));
   bind('homeBtn', () => toTitle());
+  bind('restartBtn', () => startMission(true));
   bind('quitBtn', () => toTitle());
   bind('resumeBtn', () => resume());
   bind('pauseBtn', () => { if (state === 'playing') pause(); });
@@ -1104,7 +1673,7 @@
   function pause() {
     if (state !== 'playing') return;
     state = 'paused';
-    mouseDown = false; touchFire = false;
+    mouseDown = false; touchFire = false; aimHeld = false;
     refreshToggles();
     $('pause').classList.remove('hidden');
     exitLock();
@@ -1116,24 +1685,63 @@
   }
   function enterMenu() {
     state = 'menu';
-    mouseDown = false; touchFire = false;
+    mouseDown = false; touchFire = false; aimHeld = false;
     exitLock();
+  }
+
+  // ---------- 任务选择 / 简报 ----------
+  let runKeep = false; // 从“下一个任务”进入时保留升级
+  function stars(n) { return [0, 1, 2].map(i => `<span class="${i < n ? '' : 'off'}">⭐</span>`).join(''); }
+  function showMissions() {
+    $('title').classList.add('hidden');
+    const grid = $('mGrid');
+    grid.innerHTML = '';
+    const cards = MISSIONS.map((m, i) => ({ n: i + 1, t: 1, icon: m.icon, name: m.name, desc: m.desc, open: i <= progress, st: starsSaved['1_' + (i + 1)] || 0 }));
+    cards.push({ n: 1, t: 2, icon: '🔥', name: '困难挑战', desc: '6 个任务再来一遍，坏蛋更强！所有武器都能用', open: progress >= 6, st: 0 });
+    for (const c of cards) {
+      const d = document.createElement('div');
+      d.className = 'm-card' + (c.open ? '' : ' locked');
+      d.innerHTML = `<div class="mc-no">${c.t > 1 ? 'HARD' : 'MISSION ' + c.n}</div><div class="mc-icon">${c.open ? c.icon : '🔒'}</div><div class="mc-name">${c.name}</div><div class="mc-desc">${c.open ? c.desc : '先完成前面的任务'}</div>${c.st ? `<div class="mc-stars">${'⭐'.repeat(c.st)}</div>` : ''}`;
+      if (c.open) d.onclick = () => { Sfx.init(); Sfx.pickup(); $('missions').classList.add('hidden'); showBriefing(c.n, c.t, false); };
+      grid.appendChild(d);
+    }
+    $('missions').classList.remove('hidden');
+  }
+  function showBriefing(n, t, keep) {
+    missionNo = n; tier = t; mission = MISSIONS[n - 1]; runKeep = keep;
+    $('brTitle').textContent = missionTitle();
+    $('brText').textContent = mission.brief;
+    $('brObj').textContent = '🎯 目标：' + mission.desc;
+    const ws = WEAPONS.map((W, i) => unlocked(i) ? (i === n - 1 && t === 1 && i > 0 ? `🆕${W.name}` : W.name) : null).filter(Boolean);
+    $('brNew').textContent = '🔫 可用武器：' + ws.join(' · ');
+    $('briefing').classList.remove('hidden');
+  }
+  function nextMission() {
+    let n = missionNo + 1, t = tier;
+    if (n > MISSIONS.length) { n = 1; t = tier + 1; }
+    $('complete').classList.add('hidden');
+    showBriefing(n, t, true);
   }
 
   // ================= 游戏流程 =================
   function clearWorld() {
-    while (allies.length) { const a = allies.pop(); scene.remove(a.g); a.g.userData.mat.dispose(); }
+    while (allies.length) removeAlly(0);
     while (enemies.length) removeEnemy(enemies[0]);
     while (pickups.length) removePickup(0);
-    for (const o of orbs) { o.alive = false; o.mesh.visible = false; }
+    for (const o of ebullets) { o.alive = false; o.mesh.visible = false; }
     for (const g of grenades) { g.alive = false; g.mesh.visible = false; }
+    for (const r of rockets) { r.alive = false; r.mesh.visible = false; }
+    clearObjectives();
     boss = null;
     $('bossbox').classList.add('hidden');
+    $('holdBar').classList.add('hidden');
+    $('reloadTip').classList.add('hidden');
+    $('scope').classList.add('hidden');
+    markersEl.innerHTML = ''; markerPool.length = 0;
   }
   function hideScreens() {
-    ['title', 'pause', 'upgrade', 'over', 'book'].forEach(id => $(id).classList.add('hidden'));
+    ['title', 'missions', 'briefing', 'complete', 'pause', 'upgrade', 'over', 'book'].forEach(id => $(id).classList.add('hidden'));
   }
-
   function toTitle() {
     gameId++;
     clearWorld();
@@ -1145,85 +1753,84 @@
     bannerEl.classList.add('hidden');
     $('title').classList.remove('hidden');
     $('bestScore').textContent = best;
-    gun.visible = false;
-    // 开始界面摆几个坏蛋和队友
-    wave = 1;
-    const props = [['grunt', -5, -3], ['tank', 0, -6], ['runner', 5, -3], ['drone', 2.5, -4]];
+    gunRoot.visible = false;
+    camera.fov = BASE_FOV; camera.updateProjectionMatrix();
+    resetBarrels();
+    heliLand(); heli.beacon.visible = false;
+    tier = 1;
+    // 开始界面：队友在直升机前面集合，远处有几个坏蛋
+    S.maxAllies = 6;
+    const spots = [[-3, 28], [-1, 27.4], [1, 27.4], [3, 28]];
+    for (const [x, z] of spots) { addAlly(new THREE.Vector3(x, 0, z), true); }
+    allies.forEach(a => { a.g.rotation.y = Math.PI; a.title = true; });
+    const props = [['grunt', -6, 8], ['heavy', 0, 4], ['runner', 6, 8], ['drone', 3, 6]];
     for (const [t, x, z] of props) spawnEnemy(t, new THREE.Vector3(x, 0, z), true);
-    for (let i = 0; i < 6; i++) addAlly(new THREE.Vector3(Math.cos(i) * 3, 0, 4 + Math.sin(i) * 2));
     state = 'title';
     refreshToggles();
   }
 
-  async function newGame() {
+  async function startMission(retry) {
     const id = ++gameId;
     clearWorld();
     hideScreens();
-    resetStats();
+    $('quiz').classList.add('hidden');
+    if (!retry && !runKeep) resetRun();
+    runKeep = false;
+    mission = MISSIONS[missionNo - 1];
     Learn.resetSession();
-    score = 0; wave = 0; level = 1; xp = 0; kills = 0; headshots = 0;
-    hp = S.maxHp; invuln = 0; combo = 0; pendingLevels = 0; revivesLeft = 2; grenadeCount = 3;
-    player.pos.set(0, 0, 6); player.vel.set(0, 0, 0); player.yaw = 0; player.pitch = -0.05;
+    hp = S.maxHp; invuln = 0; combo = 0; pendingLevels = 0; revivesLeft = 2; revivesUsed = 0; missionKills = 0; missionTime = 0;
+    grenadeCount = Math.max(grenadeCount, 3);
+    ammo.forEach((A, i) => { A.mag = magSize(i); if (WEAPONS[i].rocket) A.res = Math.max(A.res, 2); });
+    reloadT = 0; switchT = 0; aimT = 0; aimToggle = false; $('tAim').classList.remove('on'); autoReloadT = -1;
+    if (!unlocked(curW)) curW = 0;
+    // 新解锁的武器直接拿在手上
+    if (tier === 1 && missionNo >= 2 && missionNo <= 4 && unlocked(missionNo - 1) && !retry) curW = missionNo - 1;
+    gunModels.forEach((m, k) => { m.g.visible = k === curW; });
+    gunModels[3].head.visible = ammo[3].mag > 0;
+    player.pos.copy(SPAWN); player.vel.set(0, 0, 0); player.yaw = 0; player.pitch = -0.03;
     fwd.set(0, 0, -1); right.set(1, 0, 0);
-    for (let i = 0; i < 2; i++) addAlly(new THREE.Vector3(i ? 2 : -2, 0, 9));
-    gun.visible = true;
+    resetBarrels();
+    heliLand(); heli.beacon.visible = false;
+    for (let i = 0; i < S.allyCount; i++) addAlly(new THREE.Vector3(SLOTS[i][0], 0, SPAWN.z + SLOTS[i][1]), true);
+    setupObjectives();
+    gunRoot.visible = true;
     $('hud').classList.remove('hidden');
     refreshToggles();
     enterMenu();
     if (Learn.enabled) {
-      await Learn.learnNew(2, '📚 出发前先背单词');
+      await Learn.learnNew(mission.type === 'boss' ? 3 : 2, '📚 出发前先背单词');
       if (id !== gameId) return;
     } else requestLock();
-    startWave(1);
-  }
-
-  function buildWave(n) {
-    const q = [];
-    if (n % 5 === 0) {
-      q.push('boss');
-      for (let i = 0; i < 2 + Math.floor(n / 2); i++) q.push(i % 2 ? 'runner' : 'grunt');
-      return q;
-    }
-    const count = 5 + n * 2;
-    for (let i = 0; i < count; i++) {
-      const opts = [['grunt', 10]];
-      if (n >= 2) opts.push(['runner', 6]);
-      if (n >= 3) opts.push(['drone', 3 + n * 0.3]);
-      if (n >= 4) opts.push(['tank', 1.5 + n * 0.25]);
-      let tot = opts.reduce((s, o) => s + o[1], 0), r = Math.random() * tot;
-      for (const o of opts) { r -= o[1]; if (r <= 0) { q.push(o[0]); break; } }
-    }
-    return q;
-  }
-
-  function startWave(n) {
-    wave = n;
-    spawnQueue = buildWave(n);
-    spawnTimer = 1.5;
-    recruitTimer = 5;
-    waveActive = true;
     state = 'playing';
-    if (n % 5 === 0) {
-      banner('⚠ 大魔王来袭 ⚠', `第 ${n} 波 · 方块大魔王出现了！`, true);
-      Sfx.warn();
-      screenFlash('#ff0033', 0.35);
-    } else {
-      banner(`第 ${n} 波`, ['准备战斗！', '冲啊！三角形部队！', '坏蛋来了，找掩护！', '全体开火！'][n % 4]);
-      Sfx.wave();
-    }
+    heliLeave();
+    banner(missionTitle(), mission.desc);
+    Sfx.wave();
   }
 
-  function spawnPoint() {
+  function setupObjectives() {
+    mst = { phase: 'fight', spawned: 0, spawnT: 2, timer: mission.time || 0, bossT: 2.5, doneT: 0, extractCalled: false };
+    if (mission.type === 'rescue') CAGE_SPOTS.forEach(([x, z]) => objectives.push(makeCage(x, z)));
+    if (mission.type === 'demo') DISH_SPOTS.forEach(([x, z]) => objectives.push(makeDish(x, z)));
+  }
+
+  function spawnPoint(anySide) {
     let bestP = null, bestD = -1;
-    for (let i = 0; i < 8; i++) {
-      const a = Math.random() * Math.PI * 2, r = R - rand(2, 5);
-      const p = new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r);
+    for (let i = 0; i < 10; i++) {
+      const side = anySide ? Math.floor(Math.random() * 4) : [0, 0, 1, 3][Math.floor(Math.random() * 4)];
+      const u = rand(-LIM + 3, LIM - 3), e = LIM - 1.5;
+      const p = side === 0 ? new THREE.Vector3(u, 0, -e) : side === 1 ? new THREE.Vector3(e, 0, u * 0.6 - 10) : side === 2 ? new THREE.Vector3(u, 0, e) : new THREE.Vector3(-e, 0, u * 0.6 - 10);
       pushOut(p, 1.2);
       const d = p.distanceTo(player.pos);
       if (d > bestD) { bestD = d; bestP = p; }
-      if (d > 25) break;
+      if (d > 26) break;
     }
     return bestP;
+  }
+  function pickType(pool) {
+    const tot = pool.reduce((s, o) => s + o[1], 0);
+    let r = Math.random() * tot;
+    for (const o of pool) { r -= o[1]; if (r <= 0) return o[0]; }
+    return pool[0][0];
   }
 
   function wait(ms) {
@@ -1231,58 +1838,193 @@
       let left = ms;
       const iv = setInterval(() => {
         if (state === 'playing' || state === 'menu' || state === 'dead') left -= 100;
-        if (left <= 0 || state === 'title' || state === 'over') { clearInterval(iv); res(); }
+        if (left <= 0 || state === 'title' || state === 'over' || state === 'complete') { clearInterval(iv); res(); }
       }, 100);
     });
   }
 
-  async function waveCleared() {
+  function updateMission(dt) {
+    const m = mission;
+    missionTime += dt;
+    // 刷坏蛋
+    const fighting = mst.phase === 'fight' || mst.phase === 'extract';
+    const limitedTotal = m.type === 'kill' ? m.total : Infinity;
+    let maxAlive = m.maxAlive + (tier > 1 ? 2 : 0);
+    if (mst.phase === 'extract') maxAlive = Math.ceil(maxAlive * 0.6);
+    if (m.type === 'survive') maxAlive += Math.floor((m.time - mst.timer) / 25);
+    mst.spawnT -= dt;
+    const nonMinion = enemies.filter(e => !e.minion && !e.T.boss).length;
+    if (fighting && mst.spawnT <= 0 && mst.spawned < limitedTotal && nonMinion < maxAlive) {
+      mst.spawnT = m.gap * rand(0.7, 1.2) * (m.type === 'survive' ? Math.max(0.55, mst.timer / m.time) : 1);
+      const n = Math.min(limitedTotal - mst.spawned, maxAlive - nonMinion, Math.random() < 0.4 ? 2 : 1);
+      const p = spawnPoint(m.type === 'survive');
+      for (let i = 0; i < n; i++) {
+        spawnEnemy(pickType(m.pool), new THREE.Vector3(p.x + rand(-2, 2), 0, p.z + rand(-2, 2)));
+        mst.spawned++;
+      }
+    }
+    let objText = '', holdText = null, holdVal = 0;
+    if (m.type === 'kill') {
+      objText = `消灭坏蛋 ${Math.min(missionKills, m.total)}/${m.total}`;
+      if (missionKills >= m.total && mst.phase === 'fight') missionDone();
+    } else if (m.type === 'rescue' || m.type === 'demo') {
+      let left = 0;
+      for (const o of objectives) {
+        if (o.done) continue;
+        if (o.kind === 'dish' && o.planted) {
+          o.fuse -= dt; o.beep -= dt;
+          o.light.material.opacity = Math.floor(o.fuse * 6) % 2 ? 1 : 0.2;
+          if (o.beep <= 0) { o.beep = 1; Sfx.empty(); floatText(tmpV.set(o.x, 5.5, o.z), String(Math.ceil(o.fuse)), '#ff5a5a', 40); }
+          if (o.fuse <= 0) {
+            o.done = true;
+            const p = new THREE.Vector3(o.x, 3, o.z);
+            explode(p, 4.5);
+            for (let k = 0; k < 4; k++) explode(new THREE.Vector3(o.x + rand(-2, 2), rand(1, 5), o.z + rand(-2, 2)), 2, true);
+            blastDamage(p, 7, 20);
+            removeOb(o.ob);
+            screenFlash('#ffb347', 0.35);
+            banner('雷达炸毁！', objectives.filter(x => x.kind === 'dish' && !x.done).length ? '还有一座，继续！' : '全部炸毁！');
+          }
+          continue;
+        }
+        left++;
+        const d = Math.hypot(player.pos.x - o.x, player.pos.z - o.z);
+        const need = o.kind === 'cage' ? 2 : 3;
+        if (d < 3.2 || o.force) {
+          o.prog += dt / need;
+          holdText = o.kind === 'cage' ? '🔓 营救队友中… 站着别动！' : '💣 安放炸药中…';
+          holdVal = o.prog;
+          if (o.prog >= 1) {
+            if (o.kind === 'cage') {
+              o.done = true;
+              o.g.remove(o.bars);
+              o.g.remove(o.hostage.g);
+              o.hostage.flashMats.forEach(mm => mm.dispose());
+              o.hostage = null;
+              removeOb(o.ob);
+              addAlly(new THREE.Vector3(o.x, 0, o.z));
+              S.allyCount = Math.min(S.maxAllies, S.allyCount + 1);
+              puff(tmpV.set(o.x, 1, o.z), 6, 2, 0xffffff, 1);
+              Sfx.recruit();
+              centerText('🪖 队友获救，加入战斗！', '#7fc8ff', 34);
+            } else {
+              o.planted = true; o.fuse = 4; o.beep = 0;
+              Sfx.pickup();
+              centerText('💣 炸药装好了！快跑开！', '#ff8a1f', 34);
+            }
+          }
+        } else o.prog = Math.max(0, o.prog - dt * 0.15);
+      }
+      const total = objectives.length, done = objectives.filter(o => o.done).length;
+      if (mst.phase === 'fight') {
+        objText = m.type === 'rescue' ? `救出队友 ${done}/${total}` : `炸掉雷达 ${done}/${total}`;
+        if (done >= total) { mst.phase = 'extract'; heliArrive(); banner('目标完成！', '直升机马上就到，回到停机坪！'); }
+      }
+    } else if (m.type === 'survive') {
+      if (mst.phase === 'fight') {
+        mst.timer -= dt;
+        const s = Math.max(0, Math.ceil(mst.timer));
+        objText = `坚守阵地 ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+        if (mst.timer <= 0) { enemies.slice().forEach(e => poofEnemy(e)); missionDone(); }
+      }
+    } else if (m.type === 'boss') {
+      if (!mst.bossSpawned) {
+        mst.bossT -= dt;
+        objText = '坏蛋司令要来了…';
+        if (mst.bossT <= 0) {
+          mst.bossSpawned = true;
+          const e = spawnEnemy('boss', new THREE.Vector3(0, 0, -32));
+          e.spawnIn = 1;
+          boss = e;
+          $('bossname').textContent = `👑 ${e.T.name}`;
+          $('bossbox').classList.remove('hidden');
+          banner('⚠ 坏蛋司令出现 ⚠', '他会放一圈子弹：跳起来躲开！', true);
+          Sfx.warn();
+          screenFlash('#ff3030', 0.3);
+          shake = 1;
+        }
+      } else if (mst.phase === 'fight') {
+        objText = '击败坏蛋司令';
+        if (!boss) { enemies.slice().forEach(e => poofEnemy(e)); missionDone(); }
+      }
+    }
+    if (mst.phase === 'extract') {
+      objText = heli.mode === 'landed' ? '跑上直升机撤离！🚁' : '等待直升机…守住！';
+      if (heli.mode === 'landed' && Math.hypot(player.pos.x - PAD.x, player.pos.z - PAD.z) < 6) {
+        enemies.slice().forEach(e => poofEnemy(e));
+        missionDone();
+      }
+    }
+    if (mst.phase === 'done') objText = '✅ 任务完成！';
+    setText('mObj', objText);
+    $('holdBar').classList.toggle('hidden', !holdText);
+    if (holdText) { setText('holdLabel', holdText); setWidth('holdFill', Math.min(1, holdVal) * 100); }
+  }
+
+  async function missionDone() {
+    if (mst.phase === 'done') return;
     const id = gameId;
-    waveActive = false;
-    banner(`第 ${wave} 波 胜利！`, '奖励 2 颗手榴弹 + 1 个队友 + 回复生命 ❤️');
-    Sfx.levelUp();
-    grenadeCount = Math.min(S.maxGrenades, grenadeCount + 2);
-    addAlly();
-    hp = Math.min(S.maxHp, hp + 3);
-    for (const p of pickups) if (p.kind === 'gem') p.forced = true;
-    await wait(2800);
+    mst.phase = 'done';
+    banner('任务完成！', '干得漂亮，特种兵！🎉');
+    Sfx.complete();
+    for (const p of pickups) if (p.kind === 'medal') p.forced = true;
+    await wait(2600);
     if (id !== gameId) return;
-    while (state !== 'playing' || pendingLevels > 0 || needLock()) {
+    while (state !== 'playing' || pendingLevels > 0) {
       await wait(200);
-      if (id !== gameId || state === 'over') return;
+      if (id !== gameId || state === 'over' || state === 'title') return;
     }
-    if (Learn.enabled) {
-      enterMenu();
-      const bossNext = (wave + 1) % 5 === 0;
-      await Learn.learnNew(bossNext ? 3 : 2, bossNext ? '📚 大魔王要来了！先背单词' : '📚 背单词时间');
-      if (id !== gameId) return;
-    }
-    startWave(wave + 1);
+    if (id !== gameId) return;
+    state = 'complete';
+    exitLock();
+    const st = 1 + (hp >= S.maxHp * 0.5 ? 1 : 0) + (revivesUsed === 0 ? 1 : 0);
+    const key = tier + '_' + missionNo;
+    if (!starsSaved[key] || starsSaved[key] < st) starsSaved[key] = st;
+    if (tier === 1 && missionNo > progress) progress = missionNo;
+    const newBest = score > best;
+    if (newBest) best = score;
+    try {
+      localStorage.setItem('ts_progress', progress);
+      localStorage.setItem('ts_stars', JSON.stringify(starsSaved));
+      localStorage.setItem('ts_best', best);
+    } catch (e) {}
+    $('cpTitle').textContent = missionNo === 6 ? '🏆 基地安全了！你是英雄！' : '✅ 任务完成！';
+    $('cpStars').innerHTML = stars(st);
+    const unlockMsg = tier === 1 && missionNo <= 3 ? `<span class="newbest">🔓 新武器解锁：${WEAPONS[missionNo].name}！</span><br>` : '';
+    $('cpStats').innerHTML = `
+      ${unlockMsg}
+      总分 <b>${score}</b> · 用时 <b>${Math.round(missionTime)}</b> 秒<br>
+      打败 <b>${missionKills}</b> 个坏蛋 · 爆头 <b>${headshots}</b> 次 · 等级 <b>${level}</b><br>
+      ${Learn.enabled ? `这次答对 <b>${Learn.sessionRight}</b> 个单词 📚<br>` : ''}
+      ${newBest ? '<span class="newbest">🎉 新纪录！</span>' : `最高分 ${best}`}`;
+    $('cpNext').textContent = missionNo === 6 ? '🔥 挑战困难模式 ▶' : '下一个任务 ▶';
+    $('complete').classList.remove('hidden');
   }
 
   async function doLevelUp() {
     const id = gameId;
     enterMenu();
     Sfx.levelUp();
-    emit(new THREE.Vector3(player.pos.x, 1, player.pos.z), 0x7ef9ff, 60, 10, 1, 6);
+    emit(new THREE.Vector3(player.pos.x, 1, player.pos.z), 0xffd23f, 50, 9, 1, 6);
     if (Learn.enabled) {
       await Learn.review(1, '⬆️ 升级啦！', '答对 1 个单词，解锁新能力！');
       if (id !== gameId) return;
     }
     showUpgrades();
   }
-
   const UPGRADES = [
-    { icon: '🔥', name: '火力全开', desc: '开枪速度 +25%', apply() { S.fireRate *= 1.25; } },
-    { icon: '💥', name: '超级激光', desc: '激光威力 +35%', apply() { S.dmg *= 1.35; } },
-    { icon: '🔱', name: '散射激光', desc: '每次多射出 2 道激光', ok: () => S.pellets < 7, apply() { S.pellets += 2; } },
+    { icon: '🔥', name: '火力全开', desc: '步枪和霰弹枪射速 +20%', apply() { S.fireRate *= 1.2; } },
+    { icon: '💥', name: '穿甲弹', desc: '所有武器威力 +25%', apply() { S.dmg *= 1.25; } },
+    { icon: '📦', name: '扩容弹匣', desc: '弹匣能多装 50% 子弹', ok: () => S.magMul < 2.5, apply() { S.magMul *= 1.5; ammo.forEach((A, i) => { A.mag = magSize(i); }); } },
+    { icon: '⚡', name: '快速换弹', desc: '换弹速度快 35%', ok: () => S.reloadSpd < 2.5, apply() { S.reloadSpd *= 1.35; } },
     { icon: '💣', name: '手榴弹包', desc: '立刻拿到 4 颗手榴弹，最多能带 +2', apply() { S.maxGrenades += 2; grenadeCount = Math.min(S.maxGrenades, grenadeCount + 4); } },
     { icon: '☄️', name: '超级炸弹', desc: '手榴弹爆炸范围和威力 +30%', apply() { S.gRadius *= 1.3; S.gDmg *= 1.3; } },
-    { icon: '👟', name: '飞毛腿', desc: '跑得更快 +15%', ok: () => S.speed < 14, apply() { S.speed *= 1.15; } },
-    { icon: '❤️', name: '钢铁之心', desc: '生命上限 +3，并且回满生命', apply() { S.maxHp += 3; hp = S.maxHp; } },
-    { icon: '🔺', name: '紧急招募', desc: '马上来 2 个三角形队友帮你打', apply() { addAlly(); addAlly(); } },
-    { icon: '🧲', name: '超级磁铁', desc: '更远就能吸到经验水晶', ok: () => S.magnet < 18, apply() { S.magnet *= 1.5; } },
-    { icon: '🦘', name: '弹簧鞋', desc: '可以在空中再跳一次！', ok: () => S.jumps < 3, apply() { S.jumps++; } },
+    { icon: '🚀', name: '火箭补给', desc: '火箭弹 +3', ok: () => unlocked(3), apply() { ammo[3].res = Math.min(S.maxRockets, ammo[3].res + 3); } },
+    { icon: '👟', name: '飞毛腿', desc: '跑得更快 +15%', ok: () => S.speed < 11, apply() { S.speed *= 1.15; } },
+    { icon: '❤️', name: '钢铁之心', desc: '生命上限 +25，并且回满生命', apply() { S.maxHp += 25; hp = S.maxHp; } },
+    { icon: '🪖', name: '呼叫支援', desc: '马上来 1 个特种兵队友', ok: () => allies.length < S.maxAllies, apply() { addAlly(); S.allyCount = Math.min(S.maxAllies, S.allyCount + 1); } },
+    { icon: '🩹', name: '医疗兵', desc: '每秒自动回复 2 点生命', ok: () => S.regen < 6, apply() { S.regen += 2; } },
+    { icon: '🦘', name: '弹簧靴', desc: '可以在空中再跳一次！', ok: () => S.jumps < 3, apply() { S.jumps++; } },
   ];
   function showUpgrades() {
     const pool = UPGRADES.filter(u => !u.ok || u.ok());
@@ -1300,7 +2042,7 @@
         u.apply();
         $('upgrade').classList.add('hidden');
         pendingLevels--;
-        centerText(u.icon + ' ' + u.name, '#ffe15a', 40);
+        centerText(u.icon + ' ' + u.name, '#ffd23f', 40);
         state = 'playing';
         requestLock();
       };
@@ -1311,57 +2053,54 @@
 
   function hurtPlayer(dmg) {
     if (invuln > 0 || state !== 'playing') return;
-    hp -= dmg;
-    invuln = 0.7;
-    shake = Math.max(shake, 0.5);
+    hp -= dmg * (tier > 1 ? 1.25 : 1);
+    invuln = 0.35;
+    regenWait = 3;
+    shake = Math.max(shake, 0.35);
     hurtFlash();
     Sfx.hurt();
     combo = 0;
     if (hp <= 0) playerDown();
   }
-
   async function playerDown() {
     const id = gameId;
     hp = 0;
     state = 'dead';
-    mouseDown = false; touchFire = false;
-    screenFlash('#ff0033', 0.6);
+    mouseDown = false; touchFire = false; aimHeld = false;
+    screenFlash('#ff3030', 0.6);
     Sfx.boom(true);
-    await wait(1600);
+    await wait(1500);
     if (id !== gameId) return;
     exitLock();
     if (Learn.enabled && revivesLeft > 0) {
       state = 'menu';
-      const ok = await Learn.review(2, '💖 复活机会！', `答对 2 个单词就能复活（还剩 ${revivesLeft} 次机会）`, '不复活了，结束游戏');
+      const ok = await Learn.review(2, '💖 复活机会！', `答对 2 个单词就能复活（这个任务还剩 ${revivesLeft} 次机会）`, '不复活了，任务失败');
       if (id !== gameId) return;
       if (ok) {
-        revivesLeft--;
+        revivesLeft--; revivesUsed++;
         hp = S.maxHp;
         invuln = 3;
         state = 'playing';
-        while (allies.length < 2) addAlly();
+        if (!allies.length) addAlly();
         grenadeCount = Math.max(grenadeCount, 3);
-        // 复活冲击波：把附近坏蛋炸飞
         grenadeBlast(new THREE.Vector3(player.pos.x, 1, player.pos.z));
         banner('复活！', '继续战斗！💪');
         return;
       }
     }
-    gameOver();
+    missionFailed();
   }
-
-  function gameOver() {
+  function missionFailed() {
     state = 'over';
     exitLock();
     const newBest = score > best;
-    if (newBest) { best = score; try { localStorage.setItem('tri_best', best); } catch (e) {} }
-    $('overTitle').textContent = wave >= 10 ? '🏆 超级英雄！' : '💥 你被打败了';
+    if (newBest) { best = score; try { localStorage.setItem('ts_best', best); } catch (e) {} }
+    $('overTitle').textContent = '💥 任务失败';
     $('overStats').innerHTML = `
-      分数 <b>${score}</b><br>
-      到达第 <b>${wave}</b> 波 · 打败 <b>${kills}</b> 个坏蛋 · 爆头 <b>${headshots}</b> 次<br>
-      等级 <b>${level}</b><br>
-      ${Learn.enabled ? `本局答对 <b>${Learn.sessionRight}</b> 个单词 📚<br>` : ''}
-      ${newBest ? '<span class="newbest">🎉 新纪录！</span>' : `最高分 ${best}`}`;
+      ${missionTitle()}<br>
+      分数 <b>${score}</b> · 打败 <b>${missionKills}</b> 个坏蛋<br>
+      ${Learn.enabled ? `这次答对 <b>${Learn.sessionRight}</b> 个单词 📚<br>` : ''}
+      别灰心！躲在掩体后面开枪，会更安全 💪`;
     $('over').classList.remove('hidden');
   }
 
@@ -1377,7 +2116,9 @@
     if (joy.id !== null) { mx += joy.x; mz -= joy.y; }
     const len = Math.hypot(mx, mz);
     if (len > 1) { mx /= len; mz /= len; }
-    const wantX = (fwd.x * mz + right.x * mx) * S.speed, wantZ = (fwd.z * mz + right.z * mx) * S.speed;
+    const sprint = (keys.ShiftLeft || keys.ShiftRight) && mz > 0 ? 1.35 : 1;
+    const spd = S.speed * sprint * (1 - aimT * 0.4);
+    const wantX = (fwd.x * mz + right.x * mx) * spd, wantZ = (fwd.z * mz + right.z * mx) * spd;
     const acc = Math.min(1, dt * (player.onGround ? 12 : 4));
     player.vel.x += (wantX - player.vel.x) * acc;
     player.vel.z += (wantZ - player.vel.z) * acc;
@@ -1385,97 +2126,146 @@
     const p = player.pos;
     p.addScaledVector(player.vel, dt);
     pushOut(p, 0.45, p.y);
-    const d = Math.hypot(p.x, p.z);
-    if (d > R - 0.8) { p.x *= (R - 0.8) / d; p.z *= (R - 0.8) / d; }
+    p.x = clamp(p.x, -LIM, LIM); p.z = clamp(p.z, -LIM, LIM);
     const gh = groundAt(p.x, p.z, 0.45, p.y);
     if (p.y <= gh) { p.y = gh; if (player.vel.y < 0) player.vel.y = 0; player.onGround = true; player.jumpsUsed = 0; }
     else player.onGround = p.y - gh < 0.05;
-    const moving = Math.hypot(player.vel.x, player.vel.z) > 1 && player.onGround;
-    if (moving) player.bob += dt * 11;
+    if (Math.hypot(player.vel.x, player.vel.z) > 1 && player.onGround) player.bob += dt * 11 * sprint;
 
     fireCool -= dt;
     grenadeCool -= dt;
-    if ((mouseDown || touchFire) && fireCool <= 0) shoot();
+    if (switchT > 0) switchT -= dt;
+    if (reloadT > 0) { reloadT -= dt; if (reloadT <= 0) { reloadT = 0; finishReload(); } }
+    if (autoReloadT > 0) { autoReloadT -= dt; if (autoReloadT <= 0) { autoReloadT = -1; startReload(); } }
+    const wantAim = (aimHeld || aimToggle) && reloadT <= 0 && switchT <= 0;
+    aimT = clamp(aimT + (wantAim ? dt * 7 : -dt * 7), 0, 1);
+    if ((mouseDown || touchFire) && fireCool <= 0) tryFire();
     if (invuln > 0) invuln -= dt;
+    regenWait -= dt;
+    if (S.regen > 0 && regenWait <= 0 && hp < S.maxHp) hp = Math.min(S.maxHp, hp + S.regen * dt);
   }
 
   function updateCamera(dt, t) {
     if (state === 'title') {
-      const a = t * 0.12;
-      camera.position.set(Math.sin(a) * 16, 6 + Math.sin(t * 0.3), Math.cos(a) * 16 + 2);
-      camera.lookAt(0, 1.5, -1);
+      const a = t * 0.1;
+      camera.position.set(Math.sin(a) * 20, 7 + Math.sin(t * 0.3), PAD.z - 6 + Math.cos(a) * 20);
+      camera.lookAt(0, 2, PAD.z - 6);
       return;
     }
     eyePos(camera.position);
-    camera.position.y += Math.sin(player.bob) * 0.06;
+    camera.position.y += Math.sin(player.bob) * 0.05 * (1 - aimT);
     camera.rotation.set(player.pitch, player.yaw, 0);
     if (state === 'dead' || (state === 'menu' && hp <= 0) || state === 'over') {
       camera.position.y = player.pos.y + 0.5;
       camera.rotation.z = 0.5;
     }
     if (shake > 0) {
-      camera.position.x += rand(-1, 1) * shake * 0.15;
-      camera.position.y += rand(-1, 1) * shake * 0.15;
-      camera.rotation.z += rand(-1, 1) * shake * 0.02;
+      camera.position.x += rand(-1, 1) * shake * 0.12;
+      camera.position.y += rand(-1, 1) * shake * 0.12;
+      camera.rotation.z += rand(-1, 1) * shake * 0.015;
       shake = Math.max(0, shake - dt * 2.5);
     }
-    // 枪的晃动、后坐力
-    gunKick = Math.max(0, gunKick - dt * 12);
+    const W = WEAPONS[curW];
+    const fov = lerp(BASE_FOV, W.fov, aimT);
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    const scoped = W.scope && aimT > 0.9;
+    $('scope').classList.toggle('hidden', !scoped);
+    crossEl.classList.toggle('hidden', scoped);
+    crossEl.classList.toggle('ads', aimT > 0.5);
+    // 手里的枪：晃动、后坐力、换弹、换枪
+    const gm = gunModels[curW];
+    gunKick = Math.max(0, gunKick - dt * 10);
     gunDip = Math.max(0, gunDip - dt * 3);
-    gun.position.set(
-      GUN_BASE.x + Math.cos(player.bob * 0.5) * 0.012,
-      GUN_BASE.y + Math.abs(Math.sin(player.bob * 0.5)) * 0.015 - gunDip * 0.25,
-      GUN_BASE.z + gunKick * 0.08);
-    gun.rotation.x = gunKick * 0.12 - gunDip * 0.6;
-    gun.rotation.y = 0.04;
+    const rl = reloadT > 0 ? Math.sin(Math.min(1, 1 - reloadT / (W.reload / S.reloadSpd)) * Math.PI) : 0;
+    const sw = switchT > 0 ? switchT / 0.35 : 0;
+    const bobK = 1 - aimT * 0.85;
+    const hx = lerp(W.hip[0], W.ads[0], aimT), hy = lerp(W.hip[1], W.ads[1], aimT), hz = lerp(W.hip[2], W.ads[2], aimT);
+    gunRoot.position.set(
+      hx + Math.cos(player.bob * 0.5) * 0.012 * bobK,
+      hy + Math.abs(Math.sin(player.bob * 0.5)) * 0.014 * bobK - gunDip * 0.2 - rl * 0.12 - sw * 0.3,
+      hz + gunKick * gm.kick);
+    gunRoot.rotation.set(gunKick * gm.kick * 1.6 - gunDip * 0.5 - rl * 0.5, lerp(0.05, 0, aimT), rl * 0.4);
+    gunRoot.visible = !scoped && state !== 'dead' && hp > 0;
     muzzleT -= dt;
-    muzzleFlash.visible = muzzleT > 0;
-    muzzleFlash.material.rotation = Math.random() * 6;
-    gunLight.intensity = muzzleT > 0 ? 6 : 0;
+    muzzleFlash.visible = muzzleT > 0 && !W.scope;
+    if (muzzleFlash.visible) {
+      muzzleFlash.position.copy(gm.muzzle);
+      muzzleFlash.material.rotation = Math.random() * 6;
+      muzzleFlash.scale.setScalar(W.rocket ? 1.1 : W.pellets > 1 ? 0.8 : 0.55);
+    }
+    gunFlashLight.intensity = muzzleT > 0 ? 3 : 0;
   }
 
-  function nearestEnemy(pos, range) {
+  function nearestEnemy(pos, range, needLos) {
     let bestE = null, bd = range * range;
     for (const e of enemies) {
       if (e.idle || e.spawnIn > 0) continue;
       const dx = e.g.position.x - pos.x, dz = e.g.position.z - pos.z;
       const d = dx * dx + dz * dz;
-      if (d < bd) { bd = d; bestE = e; }
+      if (d < bd) {
+        if (needLos && !lineOfSight(tmpV.set(pos.x, 1.5, pos.z), tmpV2.set(e.g.position.x, e.T.drone ? e.g.position.y : 1.3 * e.s, e.g.position.z))) continue;
+        bd = d; bestE = e;
+      }
     }
     return bestE;
   }
+  function animateLegs(v, walk, amp, armed) {
+    v.legs[0].rotation.x = Math.sin(walk) * amp;
+    v.legs[1].rotation.x = -Math.sin(walk) * amp;
+    if (!armed) { v.arms[0].rotation.x = -Math.sin(walk) * amp * 0.9; v.arms[1].rotation.x = Math.sin(walk) * amp * 0.9; }
+  }
+  function faceTo(g, yaw, k) {
+    let diff = yaw - g.rotation.y;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    g.rotation.y += diff * k;
+  }
+  function flashUpdate(v, dt) {
+    if (v.flash > 0) { v.flash -= dt; v.flashMats.forEach(m => { m.emissive.setHex(0xffffff); m.emissiveIntensity = 0.9; }); v.flashing = true; }
+    else if (v.flashing) { v.flashMats.forEach(m => { m.emissiveIntensity = 0; }); v.flashing = false; }
+  }
 
   function updateAllies(dt, t, combat) {
-    for (let i = 0; i < allies.length; i++) {
-      const a = allies[i], g = a.g;
+    for (let i = allies.length - 1; i >= 0; i--) {
+      const a = allies[i], g = a.g, v = a.v;
       if (state === 'title') {
-        g.position.y = 1 + Math.sin(t * 3 + a.phase) * 0.2;
-        g.rotation.y = Math.atan2(-g.position.x, -6 - g.position.z) + Math.sin(t + a.phase) * 0.2;
+        g.rotation.y = Math.PI + Math.sin(t * 0.7 + a.phase) * 0.25;
+        v.legs.forEach(l => { l.rotation.x = 0; });
         continue;
       }
-      // 在玩家身后排成两排
-      const col = i % 4, row = Math.floor(i / 4);
-      const lx = (col - 1.5) * 2.4, lz = 2.8 + row * 2.2;
-      const tx = player.pos.x + right.x * lx - fwd.x * lz, tz = player.pos.z + right.z * lx - fwd.z * lz;
-      const k = Math.min(1, dt * 4);
-      g.position.x += (tx - g.position.x) * k;
-      g.position.z += (tz - g.position.z) * k;
-      pushOut(g.position, 0.6);
-      g.position.y = player.pos.y + 1.1 + Math.sin(t * 4 + a.phase) * 0.15;
-      const target = combat ? nearestEnemy(g.position, 26) : null;
-      const face = target ? Math.atan2(target.g.position.x - g.position.x, target.g.position.z - g.position.z) : Math.atan2(fwd.x, fwd.z);
-      let diff = face - g.rotation.y;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      g.rotation.y += diff * Math.min(1, dt * 8);
+      const slot = SLOTS[i % SLOTS.length];
+      const tx = player.pos.x + right.x * slot[0] - fwd.x * slot[1], tz = player.pos.z + right.z * slot[0] - fwd.z * slot[1];
+      const dx = tx - g.position.x, dz = tz - g.position.z;
+      const dist = Math.hypot(dx, dz);
+      let sp = 0;
+      if (dist > 0.4 && state === 'playing') {
+        sp = Math.min(dist * 2.2, S.speed * 1.25);
+        g.position.x += dx / dist * sp * dt; g.position.z += dz / dist * sp * dt;
+      }
+      pushOut(g.position, 0.5);
+      g.position.x = clamp(g.position.x, -LIM, LIM); g.position.z = clamp(g.position.z, -LIM, LIM);
+      g.position.y = 0;
+      a.speed = sp;
+      const target = combat ? (a.tgtT > 0 && a.tgt && enemies.includes(a.tgt) ? a.tgt : null) : null;
+      a.tgtT = (a.tgtT || 0) - dt;
+      if (combat && a.tgtT <= 0) { a.tgtT = 0.5; a.tgt = nearestEnemy(g.position, 30, true); }
+      const face = target ? Math.atan2(target.g.position.x - g.position.x, target.g.position.z - g.position.z) : (sp > 0.5 ? Math.atan2(dx, dz) : Math.atan2(-fwd.x, -fwd.z) + Math.PI);
+      faceTo(g, face, Math.min(1, dt * 8));
+      animateLegs(v, t * 9 + a.phase, sp > 0.5 ? 0.6 : 0, true);
+      flashUpdate(v, dt);
+      if (a.hurtT > 0) a.hurtT -= dt; else if (a.hp < a.maxHp) a.hp = Math.min(a.maxHp, a.hp + 3 * dt);
       if (!combat) continue;
       a.cool -= dt;
       if (target && a.cool <= 0) {
-        a.cool = rand(0.8, 1.1);
+        a.cool = rand(0.6, 0.95);
+        const from = new THREE.Vector3(g.position.x, 1.45, g.position.z).addScaledVector(tmpV.set(Math.sin(g.rotation.y), 0, Math.cos(g.rotation.y)), 0.9);
         const tp = new THREE.Vector3().copy(target.g.position); tp.y += target.T.drone ? 0 : 1.3 * target.s;
-        spawnTracer(g.position, tp, a.color, 0.06, 0.1);
-        emit(tp, a.color, 5, 4, 0.3, 1);
-        damageEnemy(target, S.dmg * 0.7);
+        tp.x += rand(-0.3, 0.3); tp.y += rand(-0.3, 0.3);
+        spawnTracer(from, tp, 0x9ad8ff, 0.035, 0.06);
+        spawnFlash(from, 0xffc060, 0.5, 0.06);
+        emit(tp, 0xffe15a, 4, 4, 0.25, 1);
+        damageEnemy(target, 0.8 * S.dmg, null, false, false);
+        Sfx.shoot();
       }
     }
   }
@@ -1486,30 +2276,38 @@
       const e = enemies[i], g = e.g, v = e.v;
       if (e.idle) {
         g.rotation.y = Math.atan2(camera.position.x - g.position.x, camera.position.z - g.position.z);
-        if (v.legs.length) { v.arms[0].rotation.x = Math.sin(t * 3 + e.phase) * 0.4; g.position.y = Math.abs(Math.sin(t * 2 + e.phase)) * 0.15; }
-        else { g.position.y = 3 + Math.sin(t * 2 + e.phase) * 0.3; v.ring.rotation.z += dt * 8; }
+        if (e.T.drone) { g.position.y = 4 + Math.sin(t * 2 + e.phase) * 0.3; v.rotors.forEach(r => { r.rotation.y += dt * 30; }); }
+        else { g.position.y = Math.abs(Math.sin(t * 2 + e.phase)) * 0.12; }
         continue;
       }
       if (e.spawnIn > 0) {
         e.spawnIn -= dt;
-        g.scale.setScalar(e.s * Math.max(0.01, 1 - e.spawnIn / 0.6));
+        g.scale.setScalar(e.s * Math.max(0.01, 1 - e.spawnIn / (e.T.boss ? 1 : 0.5)));
         continue;
       }
       g.scale.setScalar(e.s);
-      let dx = pp.x - g.position.x, dz = pp.z - g.position.z;
+      // 选目标：大多数时候打玩家，有时打队友
+      e.targetT -= dt;
+      if (e.targetT <= 0) {
+        e.targetT = rand(2.5, 4);
+        e.target = null;
+        if (allies.length && Math.random() < 0.3) e.target = allies[Math.floor(Math.random() * allies.length)];
+      }
+      if (e.target && !allies.includes(e.target)) e.target = null;
+      const tg = e.target ? e.target.g.position : pp;
+      let dx = tg.x - g.position.x, dz = tg.z - g.position.z;
       const dist = Math.hypot(dx, dz) || 1;
       dx /= dist; dz /= dist;
-      let spd = e.speed * (e.T.boss && e.hp < e.maxHp / 2 ? 1.5 : 1);
+      const angry = e.T.boss && e.hp < e.maxHp / 2;
+      let spd = e.speed * (angry ? 1.4 : 1);
       let mvx = dx, mvz = dz;
-      // 会开枪的坏蛋保持距离，左右横移
       if (e.T.keep && dist < e.T.keep) {
         e.strafeT -= dt;
         if (e.strafeT <= 0) { e.strafe *= -1; e.strafeT = rand(1, 2.5); }
-        mvx = -dz * e.strafe * 0.8 - dx * 0.3; mvz = dx * e.strafe * 0.8 - dz * 0.3;
-        spd *= 0.7;
+        mvx = -dz * e.strafe * 0.8 - dx * 0.25; mvz = dx * e.strafe * 0.8 - dz * 0.25;
+        spd *= 0.6;
       }
       if (state !== 'playing') spd = 0;
-      // 互相推开
       let sx = 0, sz = 0;
       for (let j = 0; j < enemies.length; j++) {
         if (j === i) continue;
@@ -1523,114 +2321,114 @@
       g.position.z += (mvz * spd + e.kb.z) * dt + sz * 0.4;
       e.kb.multiplyScalar(Math.max(0, 1 - dt * 5));
       if (!e.T.drone) pushOut(g.position, e.r + 0.1);
-      const ed = Math.hypot(g.position.x, g.position.z);
-      if (ed > R - 1) { g.position.x *= (R - 1) / ed; g.position.z *= (R - 1) / ed; }
-      g.rotation.y = Math.atan2(dx, dz);
+      g.position.x = clamp(g.position.x, -LIM, LIM); g.position.z = clamp(g.position.z, -LIM, LIM);
+      faceTo(g, Math.atan2(dx, dz), Math.min(1, dt * 10));
 
-      // 动画
       const walk = t * Math.max(2, spd) * 2.2 + e.phase;
-      if (v.legs.length) {
-        const amp = spd > 0 ? 0.7 : 0.1;
-        v.legs[0].rotation.x = Math.sin(walk) * amp;
-        v.legs[1].rotation.x = -Math.sin(walk) * amp;
-        v.arms[0].rotation.x = -Math.sin(walk) * amp * 0.8;
-        v.arms[1].rotation.x = -1.35 + Math.sin(walk) * 0.08 + (e.burstT > 0 ? -0.15 : 0);
-        g.position.y = Math.abs(Math.sin(walk)) * 0.08 * e.s;
-        if (v.cape) v.cape.rotation.x = 0.25 + Math.sin(walk * 0.7) * 0.15;
+      if (e.T.drone) {
+        g.position.y = 4.2 + Math.sin(t * 2.5 + e.phase) * 0.4;
+        v.rotors.forEach(r => { r.rotation.y += dt * 40; });
+        v.body.rotation.x = mvz * 0.1 * Math.sign(spd);
       } else {
-        g.position.y = 3.2 + Math.sin(t * 2.5 + e.phase) * 0.5;
-        v.ring.rotation.z += dt * 10;
-        v.body.rotation.x = Math.atan2(g.position.y - (pp.y + 1.4), dist) * 0.6;
+        animateLegs(v, walk, spd > 0 ? 0.7 : 0.05, v.armed);
+        g.position.y = Math.abs(Math.sin(walk)) * 0.06 * e.s;
       }
-      if (e.flash > 0) { e.flash -= dt; v.armor.emissive.setHex(0xffffff); v.armor.emissiveIntensity = 1.4; }
-      else { v.armor.emissive.setHex(e.T.color); v.armor.emissiveIntensity = 0.2; }
+      flashUpdate(v, dt);
 
-      // 开枪
+      // 开枪（看得见目标才开枪，躲在掩体后面就安全）
       if (e.T.shoot && state === 'playing') {
         e.shootT -= dt;
         e.burstT -= dt;
-        if (e.shootT <= 0 && dist < 34) {
-          e.shootT = rand(e.T.shoot[0], e.T.shoot[1]) * (wave > 8 ? 0.8 : 1);
+        if (e.shootT <= 0 && dist < 36) {
+          e.shootT = rand(e.T.shoot[0], e.T.shoot[1]) * (angry ? 0.7 : 1);
+          const from = tmpV.set(g.position.x, e.T.drone ? g.position.y - 0.3 : 1.45 * e.s, g.position.z);
+          const to = tmpV2.set(tg.x, (e.target ? 0 : pp.y) + 1.3, tg.z);
           if (e.T.boss) {
-            const angry = e.hp < e.maxHp / 2;
-            const n = angry ? 18 : 12, off = Math.random();
-            const from = new THREE.Vector3(g.position.x, 1.1, g.position.z);
-            for (let k = 0; k < n; k++) {
-              const a = (k + off) / n * Math.PI * 2;
-              fireOrb(from, new THREE.Vector3(from.x + Math.cos(a), 1.1, from.z + Math.sin(a)), 9, 0xff2255);
+            e.attackN++;
+            if (e.attackN % 3 === 0) {
+              const n = angry ? 20 : 14, off = Math.random();
+              const c = new THREE.Vector3(g.position.x, 0.8, g.position.z);
+              for (let k = 0; k < n; k++) {
+                const a = (k + off) / n * Math.PI * 2;
+                fireBullet(c, new THREE.Vector3(c.x + Math.cos(a), 0.8, c.z + Math.sin(a)), 11, e.T.dmg, true);
+              }
+              spawnRing(g.position, 0xff3030, 8, 0.5);
+              centerText('⬆ 跳起来躲开！', '#ff6b6b', 34);
+            } else {
+              e.burst = angry ? 5 : 3;
             }
-            spawnRing(g.position, 0xff0044, 8, 0.5);
-            centerText('跳起来躲开！', '#ff5577', 30);
-          } else {
+          } else if (lineOfSight(from, to)) {
             e.burst = e.T.burst || 1;
-          }
+          } else e.shootT *= 0.4; // 看不见就过一会儿再看
         }
         if (e.burst > 0 && e.burstT <= 0) {
-          e.burst--; e.burstT = 0.22;
-          const from = new THREE.Vector3().copy(g.position);
-          from.y += e.T.drone ? -0.4 : 1.15 * e.s;
-          from.x += dx * 0.8 * e.s + dz * 0.4 * e.s; from.z += dz * 0.8 * e.s - dx * 0.4 * e.s;
-          const to = new THREE.Vector3(pp.x + rand(-0.6, 0.6), pp.y + 1.2, pp.z + rand(-0.6, 0.6));
-          fireOrb(from, to, e.T.drone ? 13 : 11, e.T.color);
-          spawnFlash(from, 0xff5577, 1.2, 0.12);
+          e.burst--; e.burstT = e.T.boss ? 0.15 : 0.2;
+          const fx = Math.sin(g.rotation.y), fz = Math.cos(g.rotation.y);
+          const from = new THREE.Vector3(g.position.x + fx * 0.8 * e.s + fz * 0.25 * e.s, e.T.drone ? g.position.y - 0.3 : 1.3 * e.s, g.position.z + fz * 0.8 * e.s - fx * 0.25 * e.s);
+          const miss = e.T.boss ? 1.2 : 0.9;
+          const to = new THREE.Vector3(tg.x + rand(-miss, miss), (e.target ? 0 : pp.y) + rand(0.8, 1.6), tg.z + rand(-miss, miss));
+          if (e.T.boss) { // 扇形
+            for (let k = -1; k <= 1; k++) fireBullet(from, to.clone().add(new THREE.Vector3(-dz * k * 2.5, 0, dx * k * 2.5)), e.T.bullet, e.T.dmg * 0.6, true);
+          } else fireBullet(from, to, e.T.bullet * (tier > 1 ? 1.15 : 1), e.T.dmg, false);
+          spawnFlash(from, 0xffb050, 0.9 * e.s, 0.08);
         }
         if (e.T.boss) {
           e.summonT -= dt;
           if (e.summonT <= 0) {
-            e.summonT = 8;
+            e.summonT = angry ? 8 : 11;
             for (let k = 0; k < 3; k++) {
               const a = Math.random() * Math.PI * 2;
-              spawnEnemy(Math.random() < 0.5 ? 'grunt' : 'runner', new THREE.Vector3(g.position.x + Math.cos(a) * 5, 0, g.position.z + Math.sin(a) * 5));
+              const m2 = spawnEnemy(Math.random() < 0.6 ? 'grunt' : 'runner', new THREE.Vector3(g.position.x + Math.cos(a) * 5, 0, g.position.z + Math.sin(a) * 5));
+              m2.minion = true;
             }
+            centerText('坏蛋司令叫来了帮手！', '#ff6b6b', 28);
           }
         }
       }
-
-      // 撞到队友
-      for (let k = allies.length - 1; k >= 0; k--) {
-        const ap = allies[k].g.position;
-        const rr = e.r + 0.6;
-        if (!e.T.drone && (ap.x - g.position.x) ** 2 + (ap.z - g.position.z) ** 2 < rr * rr) {
-          killAlly(k);
-          e.kb.set(-dx, 0, -dz).multiplyScalar(e.T.boss ? 2 : 10);
-          damageEnemy(e, e.T.boss ? 4 : 3 * S.dmg);
-          break;
-        }
-      }
-      if (e.hp <= 0) { i--; continue; }
       // 近身攻击
       e.atk -= dt;
-      const reach = e.r + 0.7;
-      if (!e.T.drone && dist < reach && pp.y < g.position.y + 2 * e.s && e.atk <= 0 && state === 'playing') {
-        e.atk = 1.1;
-        hurtPlayer(e.T.dmg);
-        e.kb.set(-dx, 0, -dz).multiplyScalar(e.T.boss ? 4 : 12);
-        player.vel.x += dx * 8; player.vel.z += dz * 8;
+      if (!e.T.drone && state === 'playing' && e.atk <= 0) {
+        const reach = e.r + 0.8;
+        const pd = Math.hypot(pp.x - g.position.x, pp.z - g.position.z);
+        if (pd < reach && pp.y < 2 * e.s) {
+          e.atk = 1.1;
+          hurtPlayer(e.T.boss ? 20 : e.T.dmg + (e.type === 'runner' ? 0 : 3));
+          e.kb.set(-dx, 0, -dz).multiplyScalar(e.T.boss ? 3 : 10);
+          const ux = (pp.x - g.position.x) / (pd || 1), uz = (pp.z - g.position.z) / (pd || 1);
+          player.vel.x += ux * 9; player.vel.z += uz * 9;
+        } else {
+          for (let k = allies.length - 1; k >= 0; k--) {
+            const ap = allies[k].g.position;
+            if (Math.hypot(ap.x - g.position.x, ap.z - g.position.z) < reach) { e.atk = 1.1; hurtAlly(k, e.T.dmg); e.kb.set(-dx, 0, -dz).multiplyScalar(8); break; }
+          }
+        }
       }
     }
   }
 
-  function updateOrbs(dt) {
+  function updateBullets(dt) {
     const pp = player.pos;
-    for (const o of orbs) {
-      if (!o.alive) continue;
-      o.life -= dt;
-      const p = o.mesh.position;
-      p.addScaledVector(o.vel, dt);
-      o.mesh.rotation.y += dt * 6;
-      if (o.life <= 0 || Math.hypot(p.x, p.z) > R + 3 || p.y < 0 || insideBox(p)) {
-        if (o.life > 0) emit(p, 0xff2255, 6, 3, 0.3, 1);
-        o.alive = false; o.mesh.visible = false; continue;
+    for (const b of ebullets) {
+      if (!b.alive) continue;
+      b.life -= dt;
+      const p = b.mesh.position;
+      p.addScaledVector(b.vel, dt);
+      if (b.life <= 0 || Math.abs(p.x) > HALF + 2 || Math.abs(p.z) > HALF + 2 || p.y < 0) { b.alive = false; b.mesh.visible = false; continue; }
+      const ob = insideBox(p);
+      if (ob) {
+        emit(p, 0xffa040, 4, 3, 0.25, 1);
+        if (ob.kind === 'barrel') damageBarrel(ob, 1);
+        b.alive = false; b.mesh.visible = false; continue;
       }
       let hit = false;
       for (let i = allies.length - 1; i >= 0; i--) {
         const ap = allies[i].g.position;
-        if ((ap.x - p.x) ** 2 + (ap.y - p.y) ** 2 + (ap.z - p.z) ** 2 < 0.6) { killAlly(i); hit = true; break; }
+        if ((ap.x - p.x) ** 2 + (ap.z - p.z) ** 2 < 0.3 && p.y > 0.2 && p.y < 2.3) { hurtAlly(i, b.dmg); hit = true; break; }
       }
-      if (!hit && (pp.x - p.x) ** 2 + (pp.z - p.z) ** 2 < 0.45 && p.y > pp.y && p.y < pp.y + 1.9) {
-        hurtPlayer(1); hit = true;
+      if (!hit && (pp.x - p.x) ** 2 + (pp.z - p.z) ** 2 < 0.3 && p.y > pp.y && p.y < pp.y + 1.85) {
+        hurtPlayer(b.dmg); hit = true;
       }
-      if (hit) { o.alive = false; o.mesh.visible = false; emit(p, 0xff2255, 12, 5, 0.4, 1); }
+      if (hit) { b.alive = false; b.mesh.visible = false; emit(p, 0xffa040, 8, 4, 0.3, 1); }
     }
   }
 
@@ -1644,37 +2442,31 @@
         g.position.addScaledVector(p.vel, dt);
         p.vel.y -= 16 * dt;
         if (g.position.y < 0.7) { g.position.y = 0.7; p.vel.set(0, 0, 0); }
-      } else {
-        g.position.y = 0.8 + Math.sin(p.t * 3) * 0.2;
-      }
-      if (!g.isSprite) g.rotation.y += dt * 2.5;
+        pushOut(g.position, 0.4);
+      } else g.position.y = 0.8 + Math.sin(p.t * 3) * 0.15;
+      g.rotation.y += dt * 2.5;
       if (p.life < 4) g.visible = Math.floor(p.life * 6) % 2 === 0;
       const dx = pp.x - g.position.x, dz = pp.z - g.position.z;
       const d = Math.hypot(dx, dz) || 0.01;
-      if (p.kind === 'gem' && (d < S.magnet || p.forced) && state === 'playing') {
-        const sp = (p.forced ? 30 : 14) + Math.max(0, S.magnet - d) * 2;
+      if (p.kind === 'medal' && (d < 6 || p.forced) && state === 'playing') {
+        const sp = (p.forced ? 30 : 12) + Math.max(0, 6 - d) * 2;
         g.position.x += dx / d * sp * dt; g.position.z += dz / d * sp * dt;
       }
       if (d < 1.4 && state === 'playing') {
-        if (p.kind === 'gem') {
+        if (p.kind === 'medal') {
           xp++;
           Sfx.gem();
           const need = 4 + level * 3;
           if (xp >= need) { xp -= need; level++; pendingLevels++; }
-        } else if (p.kind === 'recruit') {
-          if (addAlly(g.position)) centerText('🔺 新队友加入！', '#5dff8a', 36);
-          else centerText('队伍满员！+50 分', '#ffe15a', 30);
-          Sfx.recruit();
-        } else if (p.kind === 'grenade') {
-          if (grenadeCount >= S.maxGrenades) continue;
+        } else if (p.kind === 'ammo') {
           grenadeCount = Math.min(S.maxGrenades, grenadeCount + 2);
-          centerText('💣 +2 手榴弹', '#ffb347', 34);
-          bumpGrenadeBox();
+          ammo[3].res = Math.min(S.maxRockets, ammo[3].res + 2);
+          centerText(unlocked(3) ? '📦 手榴弹 +2 · 火箭弹 +2' : '📦 手榴弹 +2', '#ffd23f', 30);
           Sfx.pickup();
         } else {
           if (hp >= S.maxHp) continue;
-          hp = Math.min(S.maxHp, hp + 3);
-          centerText('❤️ +3', '#ff5577', 36);
+          hp = Math.min(S.maxHp, hp + 30);
+          centerText('✚ 生命 +30', '#6ee36a', 34);
           Sfx.pickup();
         }
         removePickup(i);
@@ -1682,115 +2474,151 @@
     }
   }
 
-  function updateWave(dt) {
-    if (!waveActive) return;
-    spawnTimer -= dt;
-    const maxAlive = 5 + Math.min(10, wave);
-    const alive = enemies.length;
-    if (spawnQueue.length && spawnTimer <= 0 && alive < maxAlive) {
-      spawnTimer = Math.max(0.6, 2 - wave * 0.08);
-      const p = spawnPoint();
-      const n = Math.min(spawnQueue.length, 1 + Math.floor(Math.random() * Math.min(3, 1 + wave / 3)), maxAlive - alive);
-      for (let i = 0; i < n; i++) {
-        const type = spawnQueue.shift();
-        const e = spawnEnemy(type, new THREE.Vector3(p.x + rand(-2, 2), 0, p.z + rand(-2, 2)));
-        if (type === 'boss') {
-          boss = e;
-          $('bossname').textContent = `👑 ${e.T.name} · 第 ${wave / 5} 号`;
-          $('bossbox').classList.remove('hidden');
-          e.hp = e.maxHp = Math.ceil(ETYPES.boss.hp * (1 + (wave / 5 - 1) * 0.8));
-          e.spawnIn = 1.2;
-          shake = 1.2;
-        }
+  // ---------- 目标标记 ----------
+  const markersEl = $('markers');
+  const markerPool = [];
+  function getMarker(i) {
+    if (!markerPool[i]) {
+      const d = document.createElement('div');
+      d.className = 'marker';
+      d.innerHTML = '<div class="mk-icon"></div><div class="mk-txt"></div><div class="mk-arrow">▼</div>';
+      markersEl.appendChild(d);
+      markerPool[i] = { d, icon: d.children[0], txt: d.children[1], last: '' };
+    }
+    return markerPool[i];
+  }
+  function updateMarkers() {
+    const list = [];
+    if (state !== 'title' && mission && mst) {
+      for (const o of objectives) {
+        if (o.done) continue;
+        if (o.kind === 'cage') list.push([o.x, 3.2, o.z, '🔓', '救队友']);
+        else list.push([o.x, 6, o.z, o.planted ? '💣' : '📡', o.planted ? '快跑开！' : '安放炸药']);
+      }
+      if (mst.phase === 'extract') list.push([PAD.x, heli.g.visible ? heli.g.position.y + 5 : 5, PAD.z, '🚁', '撤离点']);
+      if (boss) list.push([boss.g.position.x, boss.g.position.y + 5.8, boss.g.position.z, '👑', '坏蛋司令']);
+      if (mission.type === 'kill' && mst.phase === 'fight' && mission.total - missionKills <= 3) {
+        for (const e of enemies) if (!e.idle && e.spawnIn <= 0) list.push([e.g.position.x, e.g.position.y + (e.T.drone ? 1.5 : 2.9 * e.s), e.g.position.z, '🎯', '']);
       }
     }
-    recruitTimer -= dt;
-    if (recruitTimer <= 0) {
-      recruitTimer = rand(9, 13);
-      const nRec = pickups.filter(p => p.kind === 'recruit').length;
-      if (nRec < 2 && allies.length < S.maxAllies) {
-        for (let k = 0; k < 10; k++) {
-          const a = Math.random() * Math.PI * 2, r = rand(6, R * 0.8);
-          const pos = new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r);
-          if (pos.distanceTo(player.pos) > 8 && !obstacles.some(o => Math.abs(pos.x - o.x) < o.hx + 1 && Math.abs(pos.z - o.z) < o.hz + 1)) {
-            spawnPickup('recruit', pos);
-            pickups[pickups.length - 1].vel.set(0, 0, 0);
-            break;
-          }
-        }
+    for (let i = 0; i < Math.max(list.length, markerPool.length); i++) {
+      if (i >= list.length) { if (markerPool[i]) markerPool[i].d.style.display = 'none'; continue; }
+      const [x, y, z, icon, label] = list[i];
+      const mk = getMarker(i);
+      tmpV3.set(x, y, z).project(camera);
+      let sx = tmpV3.x, sy = tmpV3.y;
+      const behind = tmpV3.z > 1;
+      if (behind) { sx = -sx; sy = -1; }
+      const edge = behind || Math.abs(sx) > 0.82 || sy > 0.72 || sy < -0.6;
+      sx = clamp(sx, -0.82, 0.82); sy = clamp(sy, -0.6, 0.72);
+      const dist = Math.round(Math.hypot(x - player.pos.x, z - player.pos.z));
+      mk.d.style.display = '';
+      mk.d.style.left = ((sx * 0.5 + 0.5) * innerWidth) + 'px';
+      mk.d.style.top = ((-sy * 0.5 + 0.5) * innerHeight) + 'px';
+      const key = icon + label + dist + edge;
+      if (mk.last !== key) {
+        mk.last = key;
+        mk.icon.textContent = icon;
+        mk.txt.textContent = (label ? label + ' ' : '') + dist + 'm';
+        mk.d.children[2].style.visibility = edge ? 'hidden' : 'visible';
       }
     }
-    if (!spawnQueue.length && enemies.length === 0) waveCleared();
   }
 
   // ---------- HUD ----------
   const hudCache = {};
   function setText(id, v) { if (hudCache[id] !== v) { hudCache[id] = v; $(id).textContent = v; } }
   function setWidth(id, v) { const s = v.toFixed(1) + '%'; if (hudCache[id] !== s) { hudCache[id] = s; $(id).style.width = s; } }
+  function setClass(el, key, cls, on) { const k = key + cls; if (hudCache[k] !== on) { hudCache[k] = on; el.classList.toggle(cls, on); } }
   const radar = $('radar'), rctx = radar.getContext('2d');
   const crossEl = $('crosshair');
+  const hpBarEl = document.querySelector('.bar.hp'), ammoEl = document.querySelector('.w-ammo');
   const aimDir = new THREE.Vector3(), aimEye = new THREE.Vector3(), aimC = new THREE.Vector3();
   function updateHUD() {
+    setText('mName', mission ? missionTitle() : '');
     setText('score', score);
-    setText('wave', wave);
-    setText('left', enemies.length + spawnQueue.length);
     setText('level', level);
     setText('troops', allies.length);
     setText('grenades', grenadeCount);
+    setText('hpNum', Math.max(0, Math.ceil(hp)));
     setWidth('hpbar', Math.max(0, hp) / S.maxHp * 100);
+    setClass(hpBarEl, 'hp', 'low', hp < S.maxHp * 0.3);
     setWidth('xpbar', xp / (4 + level * 3) * 100);
     if (boss) setWidth('bossbar', Math.max(0, boss.hp) / boss.maxHp * 100);
-    // 准星对准坏蛋时变红
+    const W = WEAPONS[curW], A = ammo[curW];
+    setText('wName', W.name);
+    setText('ammoMag', A.mag);
+    setText('ammoRes', '/ ' + (A.res === Infinity ? '∞' : A.res));
+    setClass(ammoEl, 'ammo', 'low', A.mag <= Math.max(1, magSize(curW) * 0.2));
+    const slotsKey = WEAPONS.map((w, i) => (unlocked(i) ? 1 : 0) + (i === curW ? 2 : 0)).join('');
+    if (hudCache.slots !== slotsKey) {
+      hudCache.slots = slotsKey;
+      $('wSlots').innerHTML = WEAPONS.map((w, i) => `<span class="w-slot${i === curW ? ' on' : ''}${unlocked(i) ? '' : ' lock'}">${isTouch ? '' : (i + 1) + ' '}${unlocked(i) ? w.short : '🔒'}</span>`).join('');
+    }
+    $('reloadTip').classList.toggle('hidden', !(reloadT > 0));
     if (state === 'playing') {
       eyePos(aimEye);
       camera.getWorldDirection(aimDir);
       let hot = false;
       for (const e of enemies) {
         if (e.idle || e.spawnIn > 0) continue;
-        for (const s of hitSpheres(e)) if (raySphere(aimEye, aimDir, aimC.set(s[0], s[1], s[2]), s[3] * 1.15) > 0) { hot = true; break; }
+        for (const s of hitSpheres(e)) if (raySphere(aimEye, aimDir, aimC.set(s[0], s[1], s[2]), s[3] * 1.12) > 0) { hot = true; break; }
         if (hot) break;
       }
-      crossEl.classList.toggle('hot', hot);
+      setClass(crossEl, 'x', 'hot', hot);
     }
     drawRadar();
   }
   function drawRadar() {
-    const W = 300, c = W / 2, scale = 140 / 40;
-    rctx.clearRect(0, 0, W, W);
-    rctx.strokeStyle = 'rgba(126,249,255,0.25)';
-    rctx.lineWidth = 2;
-    for (const r of [45, 90, 135]) { rctx.beginPath(); rctx.arc(c, c, r, 0, Math.PI * 2); rctx.stroke(); }
+    const Wd = 300, c = Wd / 2, scale = 140 / 40;
+    rctx.clearRect(0, 0, Wd, Wd);
+    rctx.save();
+    rctx.beginPath(); rctx.arc(c, c, 146, 0, Math.PI * 2); rctx.clip();
     const pp = player.pos;
     const local = (x, z) => {
       const dx = x - pp.x, dz = z - pp.z;
       return [(dx * right.x + dz * right.z) * scale, -(dx * fwd.x + dz * fwd.z) * scale];
     };
-    // 掩体
-    rctx.fillStyle = 'rgba(126,249,255,0.18)';
+    // 掩体（旋转成小方块）
+    rctx.fillStyle = 'rgba(233,211,161,0.28)';
     for (const o of obstacles) {
+      if (o.kind === 'wall') continue;
       const [px, py] = local(o.x, o.z);
-      if (Math.hypot(px, py) > 140) continue;
-      rctx.beginPath(); rctx.arc(c + px, c + py, Math.max(o.hx, o.hz) * scale * 0.8, 0, Math.PI * 2); rctx.fill();
+      if (Math.hypot(px, py) > 170) continue;
+      rctx.save();
+      rctx.translate(c + px, c + py);
+      rctx.rotate(player.yaw);
+      rctx.fillRect(-o.hx * scale, -o.hz * scale, o.hx * 2 * scale, o.hz * 2 * scale);
+      rctx.restore();
     }
-    const plot = (x, z, color, size) => {
+    // 外墙
+    rctx.strokeStyle = 'rgba(233,211,161,0.6)'; rctx.lineWidth = 3;
+    rctx.beginPath();
+    [[-HALF, -HALF], [HALF, -HALF], [HALF, HALF], [-HALF, HALF]].forEach(([x, z], i) => { const [px, py] = local(x, z); if (i) rctx.lineTo(c + px, c + py); else rctx.moveTo(c + px, c + py); });
+    rctx.closePath(); rctx.stroke();
+    rctx.strokeStyle = 'rgba(116,224,106,0.3)'; rctx.lineWidth = 2;
+    for (const r of [47, 94, 141]) { rctx.beginPath(); rctx.arc(c, c, r, 0, Math.PI * 2); rctx.stroke(); }
+    rctx.restore();
+    const plot = (x, z, color, size, clampIt) => {
       let [px, py] = local(x, z);
       const l = Math.hypot(px, py);
-      if (l > 140) { px = px / l * 140; py = py / l * 140; }
+      if (l > 140) { if (!clampIt) return; px = px / l * 140; py = py / l * 140; }
       rctx.fillStyle = color;
       rctx.beginPath(); rctx.arc(c + px, c + py, size, 0, Math.PI * 2); rctx.fill();
     };
-    for (const p of pickups) if (p.kind !== 'gem') plot(p.g.position.x, p.g.position.z, p.kind === 'recruit' ? '#5dff8a' : (p.kind === 'grenade' ? '#ffb347' : '#ff7799'), 6);
-    for (const a of allies) plot(a.g.position.x, a.g.position.z, '#7ef9ff', 5);
-    for (const e of enemies) plot(e.g.position.x, e.g.position.z, e.T.boss ? '#ff2255' : '#ff5577', e.T.boss ? 14 : 7);
-    // 视野扇形 + 自己
-    rctx.fillStyle = 'rgba(126,249,255,0.12)';
+    for (const p of pickups) if (p.kind !== 'medal') plot(p.g.position.x, p.g.position.z, p.kind === 'medkit' ? '#6ee36a' : '#ffd23f', 5);
+    for (const o of objectives) if (!o.done) plot(o.x, o.z, '#ffd23f', 10, true);
+    if (mst && mst.phase === 'extract') plot(PAD.x, PAD.z, '#6ee36a', 11, true);
+    for (const a of allies) plot(a.g.position.x, a.g.position.z, '#7fc8ff', 6);
+    for (const e of enemies) if (!e.idle) plot(e.g.position.x, e.g.position.z, '#ff5a5a', e.T.boss ? 14 : 7, e.T.boss);
+    rctx.fillStyle = 'rgba(116,224,106,0.14)';
     rctx.beginPath(); rctx.moveTo(c, c); rctx.arc(c, c, 140, -Math.PI / 2 - 0.65, -Math.PI / 2 + 0.65); rctx.fill();
-    rctx.fillStyle = '#ffe15a';
+    rctx.fillStyle = '#ffd23f';
     rctx.beginPath(); rctx.moveTo(c, c - 12); rctx.lineTo(c + 9, c + 9); rctx.lineTo(c - 9, c + 9); rctx.fill();
   }
 
   // ---------- 主循环 ----------
-  let last = performance.now(), time = 0, titleFx = 0;
+  let last = performance.now(), time = 0;
   const ctpEl = $('clickToPlay');
   function frame(now) {
     requestAnimationFrame(frame);
@@ -1801,59 +2629,69 @@
     const active = (state === 'playing' && !waitingLock) || state === 'dead';
     if (active || state === 'title') time += dt;
     const t = time;
-
-    floorMat.uniforms.uTime.value = t;
-    floorMat.uniforms.uPlayer.value.copy(player.pos);
-    wallMat.uniforms.uTime.value = t;
-    skyTris.forEach((m, i) => { m.rotation.z += dt * (0.05 + i * 0.02); });
-    pillars.forEach((m, i) => { m.material.emissiveIntensity = 0.7 + Math.sin(t * 3 + i * 0.8) * 0.4; });
+    // 旗子飘
+    const fp = flagMesh.geometry.attributes.position;
+    for (let i = 0; i < fp.count; i++) { const x = fp.getX(i); fp.setZ(i, Math.sin(x * 3 - t * 5) * 0.12 * (x + 1.2)); }
+    fp.needsUpdate = true;
 
     if (state === 'title') {
       updateAllies(dt, t, false);
       updateEnemies(dt, t);
-      titleFx -= dt;
-      if (titleFx <= 0) {
-        titleFx = rand(0.7, 1.5);
-        const a = Math.random() * Math.PI * 2, r = rand(26, 38);
-        explode(new THREE.Vector3(Math.cos(a) * r, rand(6, 14), Math.sin(a) * r), TROOP_COLORS[Math.floor(Math.random() * TROOP_COLORS.length)], 1.6, true);
-      }
+      heli.rotor.rotation.y += dt * 2;
     } else if (active) {
       if (state === 'playing') {
         updatePlayer(dt);
         comboTimer -= dt;
         if (comboTimer <= 0) combo = 0;
-        updateWave(dt);
+        updateMission(dt);
       }
       updateAllies(dt, t, state === 'playing');
       updateEnemies(dt, t);
-      updateOrbs(dt);
+      updateBullets(dt);
       updateGrenades(dt);
+      updateRockets(dt);
       updatePickups(dt);
+      updateHeli(dt);
       if (state === 'playing' && pendingLevels > 0) doLevelUp();
     }
     if (active || state === 'title') {
       updateParticles(dt);
+      updateSmoke(dt);
       updateShards(dt);
       updateRings(dt);
       updateFlashes(dt);
       updateTracers(dt);
+      if (flashLightT > 0) { flashLightT -= dt; if (flashLightT <= 0) flashLight.intensity = 0; }
     }
-    if (state !== 'title') updateHUD();
     updateCamera(active ? dt : 0, t);
+    if (state !== 'title') { updateHUD(); updateMarkers(); }
+    // 阴影跟着玩家走
+    const focus = state === 'title' ? tmpV.set(0, 0, PAD.z - 6) : player.pos;
+    sun.position.set(focus.x + 40, 60, focus.z + 25);
+    sun.target.position.set(focus.x, 0, focus.z);
+    renderer.clear();
     renderer.render(scene, camera);
+    if (state !== 'title' && gunRoot.visible) {
+      renderer.clearDepth();
+      renderer.render(gunScene, gunCam);
+    }
   }
 
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
+    gunCam.aspect = innerWidth / innerHeight;
+    gunCam.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
   });
 
   // 测试用的小工具
   window.__game = {
-    get state() { return state; }, get wave() { return wave; }, get enemies() { return enemies.length; },
-    get allies() { return allies.length; }, get score() { return score; }, get grenades() { return grenadeCount; },
-    get hp() { return hp; },
+    get state() { return state; }, get enemies() { return enemies.length; }, get allies() { return allies.length; },
+    get score() { return score; }, get grenades() { return grenadeCount; }, get hp() { return hp; }, get weapon() { return WEAPONS[curW].id; },
+    get ammo() { return ammo[curW].mag; }, get phase() { return mst && mst.phase; }, get heli() { return heli.mode; },
+    get mission() { return missionNo; }, get kills() { return missionKills; }, get objectives() { return objectives.map(o => o.done); },
+    get player() { return player.pos.clone(); }, get level() { return level; },
     noLock() { lockFallback = true; },
     killAll() { enemies.slice().forEach(e => { if (!e.idle) damageEnemy(e, 9999); }); },
     hurt(n) { invuln = 0; hurtPlayer(n); },
@@ -1867,9 +2705,19 @@
       player.pitch = Math.atan2(dy, Math.hypot(dx, dz));
       return true;
     },
+    lookAt(x, y, z) { const dx = x - player.pos.x, dz = z - player.pos.z; player.yaw = Math.atan2(-dx, -dz); player.pitch = Math.atan2(y - player.pos.y - 1.65, Math.hypot(dx, dz)); },
     fire(on) { mouseDown = on; },
+    aim(on) { aimHeld = on; },
     grenade() { throwGrenade(); },
+    weaponTo(i) { switchWeapon(i); },
+    reload() { startReload(); },
+    teleport(x, z) { player.pos.set(x, 0, z); },
+    unlockAll() { progress = 6; },
     spawn(kind) { spawnPickup(kind, new THREE.Vector3().copy(player.pos).addScaledVector(fwd, 4)); },
+    finishObjectives() { objectives.forEach(o => { if (!o.done) { o.prog = 1; o.force = true; } }); },
+    spawnEnemy(type, x, z) { const e = spawnEnemy(type, new THREE.Vector3(x, 0, z)); e.spawnIn = 0; return true; },
+    freeze() { enemies.forEach(e => { e.speed = 0; e.shootT = 99; }); },
+    briefing(n, t) { hideScreens(); showBriefing(n, t || 1, false); },
   };
 
   toTitle();

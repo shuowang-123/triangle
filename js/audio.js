@@ -40,7 +40,7 @@ window.Sfx = (function () {
     o.start(t); o.stop(t + dur + 0.02);
   }
 
-  function noise(dur, vol, freq, when) {
+  function noise(dur, vol, freq, when, dest) {
     if (!ctx) return;
     const t = when || ctx.currentTime;
     const s = ctx.createBufferSource();
@@ -52,7 +52,7 @@ window.Sfx = (function () {
     const g = ctx.createGain();
     g.gain.setValueAtTime(vol || 0.5, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    s.connect(f); f.connect(g); g.connect(master);
+    s.connect(f); f.connect(g); g.connect(dest || master);
     s.start(t, Math.random() * 0.5); s.stop(t + dur + 0.05);
   }
 
@@ -70,6 +70,8 @@ window.Sfx = (function () {
         if (step % 2 === 0) tone(bass[bar], 0.28, 'sawtooth', 0.35, null, nextNoteTime, musicGain);
         tone(arp[(step + bar) % arp.length] * (bar % 4 === 3 ? 1.122 : 1), 0.12, 'square', 0.08, null, nextNoteTime, musicGain);
         if (step % 4 === 0) kick(nextNoteTime);
+        if (step % 8 === 4) noise(0.12, 0.5, 3000, nextNoteTime, musicGain);
+        if (step % 16 === 14) noise(0.08, 0.3, 3000, nextNoteTime, musicGain);
         step++;
         nextNoteTime += beat;
       }
@@ -154,6 +156,21 @@ window.Sfx = (function () {
       noise(0.06, 0.12, 5000);
     },
     enemyShot() { tone(500, 0.12, 'square', 0.05, 250); },
+    rifle() { noise(0.09, 0.4, 6500); tone(170, 0.07, 'square', 0.16, 70); },
+    shotgun() { noise(0.3, 0.7, 3500); tone(95, 0.25, 'sine', 0.45, 40); },
+    sniper() { noise(0.4, 0.8, 8000); tone(1100, 0.35, 'sine', 0.1, 180); tone(70, 0.4, 'sine', 0.4, 30); },
+    rocketFire() { noise(0.7, 0.45, 1600); tone(220, 0.55, 'sawtooth', 0.18, 70); },
+    reload() {
+      if (!ctx) return;
+      tone(1400, 0.03, 'square', 0.12, null, ctx.currentTime);
+      tone(800, 0.05, 'square', 0.12, null, ctx.currentTime + 0.3);
+      tone(1800, 0.03, 'square', 0.12, null, ctx.currentTime + 0.55);
+    },
+    empty() { tone(2200, 0.03, 'square', 0.08); },
+    complete() {
+      if (!ctx) return;
+      [523, 659, 784, 1047, 784, 1047].forEach((f, i) => tone(f, 0.3, 'triangle', 0.3, null, ctx.currentTime + i * 0.12));
+    },
     wave() {
       if (!ctx) return;
       [392, 523, 659].forEach((f, i) => tone(f, 0.2, 'square', 0.15, null, ctx.currentTime + i * 0.1));
