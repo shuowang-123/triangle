@@ -138,6 +138,22 @@ window.Sfx = (function () {
       if (!ctx) return;
       for (let i = 0; i < 3; i++) tone(440, 0.25, 'square', 0.18, 330, ctx.currentTime + i * 0.4);
     },
+    throwIt() { noise(0.3, 0.25, 3000); tone(500, 0.2, 'sine', 0.12, 200); },
+    jump() { tone(300, 0.12, 'sine', 0.15, 600); },
+    headshot() {
+      if (!ctx) return;
+      tone(1400, 0.08, 'square', 0.12, null, ctx.currentTime);
+      tone(1900, 0.12, 'square', 0.12, null, ctx.currentTime + 0.06);
+    },
+    blaster() {
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      if (now - lastShot < 0.05) return;
+      lastShot = now;
+      tone(1300, 0.09, 'sawtooth', 0.09, 220);
+      noise(0.06, 0.12, 5000);
+    },
+    enemyShot() { tone(500, 0.12, 'square', 0.05, 250); },
     wave() {
       if (!ctx) return;
       [392, 523, 659].forEach((f, i) => tone(f, 0.2, 'square', 0.15, null, ctx.currentTime + i * 0.1));

@@ -2,21 +2,24 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>三角形部队</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <div id="game"></div>
+<div id="hurt"></div>
 <div id="flash"></div>
 <div id="floaters"></div>
 
 <!-- 游戏中的信息栏 -->
 <div id="hud" class="hidden">
+  <div id="crosshair"><i></i><i></i><i></i><b></b></div>
+  <div id="hitmarker">✕</div>
   <div class="hud-left">
     <div class="score">分数 <b id="score">0</b></div>
-    <div class="wave">第 <b id="wave">1</b> 波</div>
-    <div class="hp"><div class="hp-label">🛡️ 指挥官</div><div class="bar"><i id="hpbar"></i></div></div>
+    <div class="wave">第 <b id="wave">1</b> 波 · 剩 <b id="left">0</b> 个坏蛋</div>
+    <div class="hp"><div class="hp-label">❤️ 生命</div><div class="bar"><i id="hpbar"></i></div></div>
   </div>
   <div class="hud-center">
     <div class="lvl">等级 <b id="level">1</b></div>
@@ -24,12 +27,27 @@
     <div id="bossbox" class="hidden"><div class="boss-name" id="bossname">BOSS</div><div class="bar boss"><i id="bossbar"></i></div></div>
   </div>
   <div class="hud-right">
-    <div class="troops">🔺 部队 <b id="troops">0</b> 人</div>
+    <canvas id="radar" width="300" height="300"></canvas>
+    <div class="troops">🔺 队友 <b id="troops">0</b></div>
     <div id="learnBadge" class="badge">📚 学习模式 开</div>
-    <button id="pauseBtn" class="icon-btn" title="暂停 (P)">⏸</button>
   </div>
-  <button id="superBtn" class="super"><span class="super-fill" id="superFill"></span><span class="super-text" id="superText">⚡ 超级冲击波 充能中</span></button>
-  <div id="joyBase" class="hidden"><div id="joyKnob"></div></div>
+  <button id="pauseBtn" class="icon-btn" title="暂停 (Esc)">⏸</button>
+  <div id="grenadeBox"><span class="g-icon">💣</span><b id="grenades">3</b><span class="g-key">G / 右键</span></div>
+
+  <!-- 平板触控 -->
+  <div id="touchUI" class="hidden">
+    <div id="joyBase"><div id="joyKnob"></div></div>
+    <button id="tFire" class="tbtn fire">🔥<span>开火</span></button>
+    <button id="tGrenade" class="tbtn gren">💣<span>手榴弹</span></button>
+    <button id="tJump" class="tbtn jump">⬆<span>跳</span></button>
+  </div>
+</div>
+
+<div id="clickToPlay" class="hidden">
+  <div class="ctp-box">
+    <div class="ctp-big">🖱️ 点一下屏幕，开始战斗！</div>
+    <div class="ctp-small">移动鼠标瞄准 · 左键开枪 · 右键或 G 丢手榴弹 · Esc 暂停</div>
+  </div>
 </div>
 
 <!-- 大字横幅 -->
@@ -41,7 +59,7 @@
     <div class="logo">
       <span class="t1">三角形</span><span class="t2">部队</span>
     </div>
-    <div class="slogan">TRIANGLE SQUAD · 招募士兵，打败方块怪兽军团！</div>
+    <div class="slogan">第一人称射击 · 带上激光枪和手榴弹，打败方块坏蛋军团！</div>
     <button class="btn huge" id="startBtn">▶ 开始战斗！</button>
     <div class="row">
       <button class="btn toggle" id="learnToggle">📚 学习模式：开</button>
@@ -50,12 +68,21 @@
       <button class="btn toggle" id="musicToggle">🎵 音乐：开</button>
     </div>
     <div class="learn-tip" id="learnTip"></div>
-    <div class="howto">
-      <div><b>移动</b> WASD / 方向键 · 平板：手指拖动</div>
-      <div><b>射击</b> 全自动！靠近怪兽就会开火</div>
-      <div><b>超级冲击波</b> 空格键 / 点⚡按钮</div>
-      <div><b>招募</b> 碰到 <span class="g">绿色三角</span> 就能加入你的部队</div>
-      <div><b>暂停</b> P 或 Esc</div>
+    <div class="howto" id="howtoPC">
+      <div><b>移动</b> WASD / 方向键</div>
+      <div><b>瞄准</b> 移动鼠标</div>
+      <div><b>开枪</b> 按住鼠标左键</div>
+      <div><b>手榴弹</b> 右键 或 G 键</div>
+      <div><b>跳</b> 空格键（可以跳上箱子！）</div>
+      <div><b>暂停</b> Esc 或 P</div>
+      <div class="wide"><b>招募</b> 碰到 <span class="g">绿色三角</span>，它就会变成你的队友一起战斗</div>
+    </div>
+    <div class="howto hidden" id="howtoTouch">
+      <div><b>移动</b> 左下角摇杆</div>
+      <div><b>瞄准</b> 右边屏幕拖动</div>
+      <div><b>开枪</b> 按住 🔥</div>
+      <div><b>手榴弹</b> 点 💣</div>
+      <div class="wide"><b>招募</b> 碰到 <span class="g">绿色三角</span>，它就会变成你的队友一起战斗</div>
     </div>
     <div class="best">最高分：<b id="bestScore">0</b></div>
   </div>
@@ -69,6 +96,7 @@
     <button class="btn toggle" id="learnToggle2">📚 学习模式：开</button>
     <button class="btn toggle" id="soundToggle2">🔊 音效：开</button>
     <button class="btn toggle" id="musicToggle2">🎵 音乐：开</button>
+    <div class="sens">瞄准灵敏度 <input type="range" id="sens" min="0.3" max="2.5" step="0.1" value="1"></div>
     <button class="btn" id="quitBtn">🏠 回到主页</button>
   </div>
 </div>
@@ -105,7 +133,7 @@
 <!-- 游戏结束 -->
 <div id="over" class="screen hidden">
   <div class="panel">
-    <h2 id="overTitle">💥 部队被打败了</h2>
+    <h2 id="overTitle">💥 你被打败了</h2>
     <div class="over-stats" id="overStats"></div>
     <button class="btn huge" id="againBtn">🔁 再来一局</button>
     <button class="btn" id="homeBtn">🏠 回到主页</button>
