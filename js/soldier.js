@@ -63,6 +63,20 @@
 
   const POLE_R = new THREE.Vector3(-0.5, -1, -0.3), POLE_L = new THREE.Vector3(0.7, -1, -0.2);
 
+  // 轮廓光：人物边缘有一圈淡淡的亮边，在沙地和雾里也能一眼看到（队友偏蓝，坏蛋偏橙）
+  function addRim(m, hex) {
+    const rc = new THREE.Color(hex);
+    m.onBeforeCompile = sh => {
+      sh.uniforms.uRim = { value: rc };
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform vec3 uRim;')
+        .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+          float rimF = pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 3.0);
+          reflectedLight.directDiffuse += uRim * rimF * 0.35;`);
+    };
+    m.customProgramCacheKey = () => 'rim' + hex;
+  }
+
   function make(kind) {
     if (!tpl || !STYLE[kind]) return makeProc(kind);
     const st = STYLE[kind];
@@ -75,8 +89,9 @@
     const flashMats = [];
     model.traverse(o => {
       if (!o.isMesh) return;
-      o.castShadow = true; o.frustumCulled = false;
+      o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false;
       const m = o.material.clone();
+      addRim(m, kind === 'ally' || kind === 'hostage' ? 0x9fd8ff : 0xffb070);
       if (/visor/i.test(o.name)) { m.emissive.setHex(st.visor); m.emissiveIntensity = 0.9; m.color.setHex(0x222222); m.roughness = 0.2; m.metalness = 0.6; }
       else { m.color.setHex(st.tint); m.roughness = Math.max(m.roughness, 0.7); flashMats.push(m); }
       o.material = m;

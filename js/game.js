@@ -30,6 +30,8 @@
   // 太阳在偏低的位置（傍晚的金色阳光），天空里的太阳和真正的光照方向一致
   const SUN_DIR = new THREE.Vector3(0.55, 0.40, -0.74).normalize();
   scene.add(new THREE.HemisphereLight(0xbcd4ff, 0xa07850, 0.62));
+  // 从太阳对面打过来的一点冷色补光，背光的一面不会死黑
+  const fill = new THREE.DirectionalLight(0x8fb0ff, 0.35); fill.position.set(-SUN_DIR.x, 0.6, -SUN_DIR.z); scene.add(fill);
   let envTex = null;
   const sun = new THREE.DirectionalLight(0xffd9a8, 3.1);
   sun.position.copy(SUN_DIR).multiplyScalar(90);
@@ -448,6 +450,7 @@
   [[0, 21, 1], [-10, 23, 1], [10, 23, 1], [0, -8, 1], [16, 6, 0], [-16, -16, 1], [24, 0, 0], [-24, 8, 0], [8, -36, 1], [-8, -36, 1], [-34, -30, 0], [34, -24, 0]]
     .forEach(([x, z, ax]) => sandbags(x, z, !!ax));
   buildBags();
+
   [[5, 1, 1], [-5, 1, 1], [28, -20, 0], [-28, -14, 0], [14, 15, 1], [-14, 30, 1], [20, 36, 0]]
     .forEach(([x, z, ax]) => barrier(x, z, !!ax));
   const BARREL_SPOTS = [[9, 10.2], [-8, 16.2], [-20, -11.8], [22, -8.4], [1.4, -21.6], [13, -30.2], [-28, 18.2], [30, 6], [-4, -12], [17.4, 22], [-36, -6], [36, 12]];
@@ -461,6 +464,183 @@
       const stripe = new THREE.Mesh(new THREE.CylinderGeometry(2.62, 2.62, 0.5, 24), stdMat('tankStripe', { color: 0xc0392b, roughness: 0.6 })); stripe.position.y = 3; g.add(stripe);
       g.position.y = 0;
       addOb(x, z, 5.2, 5.2, 4.6, g, 'tank');
+    }
+  }
+  // ================= 场景细节：伪装网、铁丝网、石头、枯草、轮胎、油渍 =================
+  const groundH = (x, z) => {
+    const pa = ground.geometry.attributes.position.array;
+    const fx = (x + 380) / 4, fz = (z + 380) / 4, ix = Math.max(0, Math.min(189, Math.floor(fx))), iz = Math.max(0, Math.min(189, Math.floor(fz)));
+    const tx = fx - ix, tz = fz - iz, H = (i, j) => pa[(j * 191 + i) * 3 + 1];
+    return lerp(lerp(H(ix, iz), H(ix + 1, iz), tx), lerp(H(ix, iz + 1), H(ix + 1, iz + 1), tx), tz);
+  };
+  const freeAt = (x, z, r) => {
+    if (Math.abs(x) < 3.6 + r || Math.abs(z + 4) < 3.6 + r) return false; // 公路
+    if (Math.hypot(x - PAD.x, z - PAD.z) < 7 + r) return false; // 停机坪
+    for (const o of obstacles) if (Math.abs(x - o.x) < o.hx + r && Math.abs(z - o.z) < o.hz + r) return false;
+    return true;
+  };
+  {
+    // 伪装网：阳光从网眼里漏下来，地上是斑驳的光影，空气里能看到一束束光
+    const netTex = canvasTex(256, 256, (g, w, h) => {
+      g.clearRect(0, 0, w, h);
+      g.strokeStyle = 'rgba(70,60,40,1)'; g.lineWidth = 1.2;
+      for (let i = 0; i <= w; i += 10) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i, h); g.stroke(); g.beginPath(); g.moveTo(0, i); g.lineTo(w, i); g.stroke(); }
+      const cols = ['#a8956a', '#8c8456', '#b8a274', '#7a7048', '#9a8460', '#6e6842'];
+      const holes = Array.from({ length: 14 }, () => [Math.random() * w, Math.random() * h, 5 + Math.random() * 10]);
+      for (let i = 0; i < 1500; i++) {
+        const x = Math.random() * w, y = Math.random() * h, r = 3 + Math.random() * 7;
+        if (holes.some(([hx, hy, hr]) => Math.hypot(x - hx, y - hy) < hr)) continue; // 留一些洞，阳光从这里漏下来
+        g.fillStyle = cols[i % cols.length];
+        g.beginPath();
+        for (let k = 0; k < 5; k++) { const a = k / 5 * Math.PI * 2 + Math.random(), rr = r * (0.5 + Math.random() * 0.6); g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+        g.fill();
+      }
+    });
+    const netMat = new THREE.MeshStandardMaterial({ map: netTex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 1 });
+    const poleMat = stdMat('netPole', { color: 0x5a4a32, roughness: 0.9 });
+    const poleGeo = new THREE.CylinderGeometry(0.06, 0.07, 3.9, 6);
+    for (const [cx, cz, w, d, rot] of [[9, 10, 10, 8, 0.1], [-11, 10, 9, 8, -0.15], [22, -9, 9, 11, 0.05], [-22, -26, 10, 8, 0.2], [26, 20, 8, 9, -0.1]]) {
+      const geo = new THREE.PlaneGeometry(w, d, 14, 14);
+      geo.rotateX(-Math.PI / 2);
+      const pa = geo.attributes.position;
+      for (let i = 0; i < pa.count; i++) {
+        const u = pa.getX(i) / (w / 2), v = pa.getZ(i) / (d / 2);
+        pa.setY(i, -0.45 * (1 - u * u) * (1 - v * v) + Math.sin(u * 7 + v * 5) * 0.05);
+      }
+      geo.computeVertexNormals();
+      const g = new THREE.Group();
+      const net = new THREE.Mesh(geo, netMat); net.position.y = 3.85; g.add(net);
+      for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        const pole = new THREE.Mesh(poleGeo, poleMat); pole.position.set(sx * w / 2, 1.95, sz * d / 2); g.add(pole);
+      }
+      g.position.set(cx, 0, cz); g.rotation.y = rot;
+      scene.add(shadowify(g));
+    }
+    // 外墙顶上的铁丝网
+    const coil = new THREE.TorusGeometry(0.26, 0.012, 3, 12);
+    const wirePts = [];
+    for (const [x0, z0, x1, z1] of [[-HALF, -HALF - 0.5, HALF, -HALF - 0.5], [-HALF, HALF + 0.5, HALF, HALF + 0.5], [-HALF - 0.5, -HALF, -HALF - 0.5, HALF], [HALF + 0.5, -HALF, HALF + 0.5, HALF]]) {
+      const len = Math.hypot(x1 - x0, z1 - z0), n = Math.floor(len / 0.22);
+      for (let i = 0; i < n; i++) wirePts.push([lerp(x0, x1, i / n), lerp(z0, z1, i / n), Math.atan2(x1 - x0, z1 - z0)]);
+    }
+    const wire = new THREE.InstancedMesh(coil, stdMat('wire', { color: 0x4a4640, metalness: 0.8, roughness: 0.45 }), wirePts.length);
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), sc = new THREE.Vector3(1, 1, 1), v = new THREE.Vector3();
+    wirePts.forEach(([x, z, a], i) => { e.set(rand(-0.25, 0.25), a, rand(-0.2, 0.2)); m4.compose(v.set(x, 4.27, z), q.setFromEuler(e), sc); wire.setMatrixAt(i, m4); });
+    wire.castShadow = true;
+    scene.add(wire);
+
+    // 石头：大大小小，基地里零星几块，墙外满地都是
+    const rockGeo = new THREE.IcosahedronGeometry(1, 2);
+    {
+      const pa = rockGeo.attributes.position;
+      for (let i = 0; i < pa.count; i++) {
+        v.fromBufferAttribute(pa, i);
+        const n = 1 + 0.22 * Math.sin(v.x * 3.1 + v.y * 1.7) * Math.cos(v.z * 2.3 - v.x) + 0.1 * Math.sin(v.y * 7 + v.z * 5);
+        v.multiplyScalar(n); v.y *= 0.62; pa.setXYZ(i, v.x, v.y, v.z);
+      }
+      rockGeo.computeVertexNormals();
+    }
+    const rocks = [];
+    for (let i = 0; i < 70; i++) { const x = rand(-LIM, LIM), z = rand(-LIM, LIM); if (freeAt(x, z, 1)) rocks.push([x, z, rand(0.12, 0.35)]); }
+    for (let i = 0; i < (isTouch ? 140 : 260); i++) {
+      const a = Math.random() * Math.PI * 2, r = rand(49, 150), x = Math.cos(a) * r, z = Math.sin(a) * r;
+      rocks.push([x, z, rand(0.4, 1) ** 2 * (r > 90 ? 4 : 2.2) + 0.3]);
+    }
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0xa3896a, roughness: 0.95, normalMap: concreteN, normalScale: new THREE.Vector2(1.2, 1.2) });
+    const rockIM = new THREE.InstancedMesh(rockGeo, rockMat, rocks.length);
+    const col = new THREE.Color();
+    rocks.forEach(([x, z, s], i) => {
+      e.set(rand(-0.3, 0.3), Math.random() * 7, rand(-0.3, 0.3));
+      m4.compose(v.set(x, groundH(x, z) - s * 0.15, z), q.setFromEuler(e), sc.set(s * rand(0.8, 1.4), s * rand(0.7, 1.2), s * rand(0.8, 1.3)));
+      rockIM.setMatrixAt(i, m4);
+      rockIM.setColorAt(i, col.setHSL(0.08 + rand(-0.02, 0.02), rand(0.15, 0.3), rand(0.42, 0.6)));
+    });
+    rockIM.castShadow = rockIM.receiveShadow = true;
+    scene.add(rockIM);
+    sc.set(1, 1, 1);
+
+    // 枯草：风一吹会轻轻摆
+    const grassTex = canvasTex(128, 128, (g, w, h) => {
+      g.clearRect(0, 0, w, h);
+      for (let i = 0; i < 60; i++) {
+        const x0 = w / 2 + rand(-30, 30), lean = rand(-34, 34), top = rand(10, 60);
+        g.strokeStyle = ['#b9a466', '#9f8f52', '#c8b57a', '#8a8048', '#a89a5e'][i % 5];
+        g.lineWidth = rand(1.5, 3);
+        g.beginPath(); g.moveTo(x0, h); g.quadraticCurveTo(x0 + lean * 0.3, (h + top) / 2, x0 + lean, top); g.stroke();
+      }
+    });
+    grassTex.wrapS = grassTex.wrapT = THREE.ClampToEdgeWrapping;
+    const gGeo = (() => {
+      const parts = [];
+      for (let k = 0; k < 3; k++) { const p = new THREE.PlaneGeometry(0.9, 0.6); p.translate(0, 0.3, 0); p.rotateY(k * Math.PI / 3); parts.push(p); }
+      const pos = [], uv = [], idx = []; let off = 0;
+      parts.forEach(p => { pos.push(...p.attributes.position.array); uv.push(...p.attributes.uv.array); idx.push(...Array.from(p.index.array, i => i + off)); off += p.attributes.position.count; });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(new Array(pos.length / 3).fill(0).flatMap(() => [0, 1, 0]), 3));
+      g.setIndex(idx);
+      return g;
+    })();
+    const grassMat = new THREE.MeshStandardMaterial({ map: grassTex, alphaTest: 0.45, side: THREE.DoubleSide, roughness: 1 });
+    grassMat.onBeforeCompile = sh => {
+      sh.uniforms.uTime = skyUniforms.uTime;
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nuniform float uTime;')
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+          vec4 ip = instanceMatrix[3];
+          float sw = (sin(uTime * 1.8 + ip.x * 0.6 + ip.z * 0.4) + 0.4 * sin(uTime * 4.3 + ip.x)) * 0.09 * max(position.y, 0.0) / 0.6;
+          transformed.x += sw; transformed.z += sw * 0.4;`);
+    };
+    const tufts = [];
+    for (let i = 0; i < (isTouch ? 260 : 520); i++) {
+      const inside = i % 3 !== 0;
+      const x = inside ? rand(-LIM, LIM) : rand(-110, 110), z = inside ? rand(-LIM, LIM) : rand(-110, 110);
+      if (inside ? !freeAt(x, z, 0.5) : Math.max(Math.abs(x), Math.abs(z)) < 47) continue;
+      tufts.push([x, z]);
+    }
+    const grassIM = new THREE.InstancedMesh(gGeo, grassMat, tufts.length);
+    tufts.forEach(([x, z], i) => {
+      const s = rand(0.6, 1.3);
+      m4.compose(v.set(x, groundH(x, z) - 0.03, z), q.setFromEuler(e.set(0, Math.random() * 7, 0)), sc.set(s, s * rand(0.7, 1.2), s));
+      grassIM.setMatrixAt(i, m4);
+      grassIM.setColorAt(i, col.setHSL(0.12 + rand(-0.02, 0.03), rand(0.25, 0.45), rand(0.55, 0.75)));
+    });
+    grassIM.receiveShadow = true;
+    scene.add(grassIM);
+    sc.set(1, 1, 1);
+
+    // 一摞摞旧轮胎（也能当掩体）
+    const tireGeo = new THREE.TorusGeometry(0.36, 0.15, 8, 18); tireGeo.rotateX(Math.PI / 2);
+    const tireMat = stdMat('tire', { color: 0x1d1c1b, roughness: 0.85 });
+    let placed = 0;
+    for (let tries = 0; tries < 200 && placed < 7; tries++) {
+      const x = rand(-LIM + 3, LIM - 3), z = rand(-LIM + 3, LIM - 3);
+      if (!freeAt(x, z, 1.5) || Math.hypot(x - SPAWN.x, z - SPAWN.z) < 6 || BARREL_SPOTS.some(([bx, bz]) => Math.hypot(x - bx, z - bz) < 2.5)) continue;
+      const g = new THREE.Group(), n = 2 + (placed % 3);
+      for (let k = 0; k < n; k++) { const t = new THREE.Mesh(tireGeo, tireMat); t.position.set(rand(-0.05, 0.05), 0.15 + k * 0.29, rand(-0.05, 0.05)); t.rotation.y = Math.random(); g.add(t); }
+      addOb(x, z, 1, 1, 0.3 + n * 0.29, g);
+      placed++;
+    }
+
+    // 地上的油渍和车辙
+    const stainTex = canvasTex(128, 128, (g, w, h) => {
+      g.clearRect(0, 0, w, h);
+      for (let i = 0; i < 6; i++) {
+        const x = 64 + rand(-22, 22), y = 64 + rand(-22, 22), r = rand(14, 40);
+        const gr = g.createRadialGradient(x, y, 0, x, y, r);
+        gr.addColorStop(0, 'rgba(30,22,14,0.55)'); gr.addColorStop(1, 'rgba(30,22,14,0)');
+        g.fillStyle = gr; g.fillRect(0, 0, w, h);
+      }
+    });
+    stainTex.wrapS = stainTex.wrapT = THREE.ClampToEdgeWrapping;
+    const stainMat = new THREE.MeshStandardMaterial({ map: stainTex, transparent: true, depthWrite: false, roughness: 0.6, polygonOffset: true, polygonOffsetFactor: -2 });
+    const stainGeo = new THREE.PlaneGeometry(1, 1); stainGeo.rotateX(-Math.PI / 2);
+    for (const [bx, bz] of BARREL_SPOTS.concat([[-20, -5], [22, -12], [30, 18], [-30, 16], [33, -5], [0, 30], [-5, -18]])) {
+      const st = new THREE.Mesh(stainGeo, stainMat);
+      const s = rand(2, 4.5);
+      st.scale.set(s, 1, s * rand(0.6, 1)); st.rotation.y = Math.random() * 6;
+      st.position.set(bx + rand(-1, 1), 0.015, bz + rand(-1, 1)); st.receiveShadow = true;
+      scene.add(st);
     }
   }
   // 旗杆
