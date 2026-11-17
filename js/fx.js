@@ -39,8 +39,8 @@
 
   const QUALITY = {
     //          渲染比例  抗锯齿 阴影   阴影图  AO     光柱步数 光柱分辨率 泛光层数
-    high:   { scale: 1.0,  msaa: 4, shadow: 2048, soft: true,  ao: true,  vol: 28, volDiv: 2, bloom: 5 },
-    medium: { scale: 0.85, msaa: 4, shadow: 1024, soft: false, ao: false, vol: 14, volDiv: 3, bloom: 4 },
+    high:   { scale: 1.0,  msaa: 4, shadow: 4096, soft: true,  ao: 12,    vol: 32, volDiv: 2, bloom: 5 },
+    medium: { scale: 0.85, msaa: 4, shadow: 2048, soft: false, ao: 6,     vol: 16, volDiv: 3, bloom: 4 },
     low:    { scale: 0.7,  msaa: 0, shadow: 0,    soft: false, ao: false, vol: 0,  volDiv: 4, bloom: 3 },
   };
   const ORDER = ['low', 'medium', 'high'];
@@ -84,12 +84,12 @@
     }
 
     // ---------- 渲染目标 ----------
-    let W = 1, H = 1, sceneRT = null, aoRT = null, volRT = null;
+    let W = 1, H = 1, sceneRT = null, aoRT = null, volRT = null, godRT = null;
     let bloomDown = [], bloomUp = [];
     function disposeAll() {
-      [sceneRT, aoRT, volRT].concat(bloomDown, bloomUp).forEach(t => t && t.dispose());
+      [sceneRT, aoRT, volRT, godRT].concat(bloomDown, bloomUp).forEach(t => t && t.dispose());
       bloomDown = []; bloomUp = [];
-      sceneRT = aoRT = volRT = null;
+      sceneRT = aoRT = volRT = godRT = null;
     }
     function build() {
       disposeAll();
@@ -101,6 +101,7 @@
       sceneRT.texture.minFilter = sceneRT.texture.magFilter = THREE.LinearFilter;
       sceneRT.texture.generateMipmaps = false;
       if (Q.ao) aoRT = mkRT(W >> 1, H >> 1, THREE.UnsignedByteType);
+      godRT = mkRT(Math.ceil(W / 4), Math.ceil(H / 4));
       if (Q.vol && Q.shadow) volRT = mkRT(Math.ceil(W / Q.volDiv), Math.ceil(H / Q.volDiv), THREE.UnsignedByteType);
       let w = W >> 1, h = H >> 1;
       for (let i = 0; i < Q.bloom; i++) {
@@ -110,8 +111,10 @@
       }
       U.uTexel.value.set(1 / W, 1 / H);
       volMat.defines.STEPS = Q.vol || 1; volMat.needsUpdate = true;
+      if (Q.ao) { aoMat.defines.AO_N = Q.ao; aoMat.needsUpdate = true; }
       compMat.defines.USE_AO = Q.ao ? 1 : 0;
       compMat.defines.USE_VOL = volRT ? 1 : 0;
+      compMat.defines.USE_GOD = godRT ? 1 : 0;
       compMat.needsUpdate = true;
     }
 
@@ -142,8 +145,8 @@
         float rUv = R * uProj[1][1] * 0.5 / -P.z;
         float n0 = ign(gl_FragCoord.xy) * 6.2831;
         float occ = 0.0;
-        for (int i = 0; i < 10; i++) {
-          float fi = (float(i) + 0.5) / 10.0;
+        for (int i = 0; i < AO_N; i++) {
+          float fi = (float(i) + 0.5) / float(AO_N);
           float a = n0 + float(i) * 2.39996;
           vec2 off = vec2(cos(a), sin(a)) * rUv * fi;
           off.x *= uTexel.x / uTexel.y;
@@ -152,9 +155,9 @@
           float vn = dot(v, N);
           occ += max(0.0, vn - 0.02 * -P.z) / (vv + 0.05) * step(vv, R * R * 4.0);
         }
-        float ao = clamp(1.0 - occ * 0.22, 0.0, 1.0);
+        float ao = clamp(1.0 - occ * 2.4 / float(AO_N), 0.0, 1.0);
         gl_FragColor = vec4(vec3(ao), 1.0);
-      }`, { tDepth: { value: null }, uProjInv: U.uProjInv, uProj: U.uProj, uTexel: U.uTexel, uNear: U.uNear, uFar: U.uFar });
+      }`, { tDepth: { value: null }, uProjInv: U.uProjInv, uProj: U.uProj, uTexel: U.uTexel, uNear: U.uNear, uFar: U.uFar }, null, { AO_N: 10 });
     aoMat.extensions = { derivatives: true };
 
     // ---------- 体积光：沿视线在阴影图里走几步，算出空气里亮的地方 ----------
@@ -176,7 +179,7 @@
           float lit = 1.0;
           if (sc.x > 0.0 && sc.x < 1.0 && sc.y > 0.0 && sc.y < 1.0 && sc.z < 1.0)
             lit = step(sc.z - 0.002, unpackRGBAToDepth(texture2D(tShadow, sc.xy)));
-          float dens = 0.35 + exp(-max(p.y, 0.0) * 0.18);
+          float dens = 0.3 + 1.3 * exp(-max(p.y, 0.0) * 0.22);
           acc += lit * dens * stepL;
           t += stepL;
         }
@@ -184,6 +187,26 @@
       }`, { tDepth: { value: null }, tShadow: { value: null }, uShadowMat: { value: new THREE.Matrix4() }, uCamPos: U.uCamPos, uNear: U.uNear, uFar: U.uFar, uProjInv: U.uProjInv, uCamWorld: U.uCamWorld }, RAY_VS, { STEPS: 16 });
 
     // ---------- 泛光：亮的地方发出柔和的光晕 ----------
+    // ---------- 太阳光芒：太阳躲在网、塔、集装箱后面时，从缝隙里射出一道道光线 ----------
+    const godMat = mat(COMMON + `
+      uniform sampler2D tColor; uniform sampler2D tDepth; uniform vec2 uSunUv; uniform float uAspect;
+      varying vec2 vUv;
+      void main() {
+        vec2 stepv = (vUv - uSunUv) / 48.0;
+        vec2 uv = vUv - stepv * ign(gl_FragCoord.xy);
+        float decay = 1.0; vec3 acc = vec3(0.0);
+        for (int i = 0; i < 48; i++) {
+          uv -= stepv;
+          float sky = step(0.99999, texture2D(tDepth, uv).x);
+          vec2 dv = (uv - uSunUv) * vec2(uAspect, 1.0);
+          float nearSun = exp(-dot(dv, dv) * 24.0);
+          acc += min(texture2D(tColor, uv).rgb, vec3(3.0)) * sky * nearSun * decay;
+          decay *= 0.972;
+        }
+        gl_FragColor = vec4(acc / 48.0, 1.0);
+      }`, { tColor: { value: null }, tDepth: { value: null }, uSunUv: { value: new THREE.Vector2() }, uAspect: { value: 1 }, uNear: U.uNear, uFar: U.uFar });
+    const _sp = new THREE.Vector3(), _fw = new THREE.Vector3();
+
     const prefilterMat = mat(`
       uniform sampler2D tSrc; uniform vec2 uTexel; varying vec2 vUv;
       void main() {
@@ -228,6 +251,7 @@
       uniform sampler2D tColor; uniform sampler2D tDepth; uniform sampler2D tBloom; uniform sampler2D tAO; uniform sampler2D tVol;
       uniform vec3 uCamPos; uniform vec2 uTexel; uniform vec2 uAOTexel; uniform vec2 uVolTexel;
       uniform float uExposure; uniform float uTime; uniform float uBloom; uniform float uHit;
+      uniform sampler2D tGod; uniform float uGod;
       varying vec2 vUv; varying vec3 vRay;
       vec3 fxFit(vec3 v) { vec3 a = v * (v + 0.0245786) - 0.000090537; vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081; return a / b; }
       vec3 aces(vec3 c) {
@@ -237,9 +261,21 @@
         return clamp(O * fxFit(I * c), 0.0, 1.0);
       }
       vec3 toSRGB(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)); }
+      float h21(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+      float vn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(h21(i), h21(i + vec2(1, 0)), f.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), f.x), f.y); }
       void main() {
-        vec3 col = texture2D(tColor, vUv).rgb;
-        float d = texture2D(tDepth, vUv).x;
+        vec2 uv = vUv;
+        float d = texture2D(tDepth, uv).x;
+        // 远处地面上的热浪：画面轻轻抖动
+        float far0 = d < 0.99999 ? viewDepth(d) : 999.0;
+        float haze = smoothstep(45.0, 140.0, far0);
+        if (haze > 0.0) {
+          vec2 hp = vec2(vUv.x * 60.0, vUv.y * 140.0 - uTime * 3.0);
+          uv += (vec2(vn(hp), vn(hp + 7.3)) - 0.5) * vec2(0.0012, 0.0022) * haze;
+          d = texture2D(tDepth, uv).x;
+        }
+        vec3 col = texture2D(tColor, uv).rgb;
         float rl = length(vRay);
         vec3 dir = vRay / rl;
         float sunAmt = max(dot(dir, uSunDir), 0.0);
@@ -251,9 +287,12 @@
             col *= mix(1.0, ao * 0.25, 0.85);
           #endif
           // 高度雾：贴着地面的沙尘更浓，远山被空气染成暖色
-          float a = 0.005, b = 0.04;
+          float a = 0.006, b = 0.05;
           float dy = dir.y * dist;
           float fogI = a * exp(-b * max(uCamPos.y, 0.0)) * dist * (abs(dy) > 0.01 ? (1.0 - exp(-b * dy)) / (b * dy) : 1.0);
+          // 一团一团慢慢飘的沙尘，雾不是均匀的
+          vec3 wp = uCamPos + dir * dist;
+          fogI *= 0.6 + 0.9 * vn(wp.xz * 0.025 + vec2(uTime * 0.03, uTime * 0.012)) * (0.6 + 0.4 * vn(wp.xz * 0.09 - uTime * 0.05));
           float fog = 1.0 - exp(-fogI);
           vec3 fogCol = skyBase(normalize(vec3(dir.x, max(dir.y, 0.0) * 0.35, dir.z))) * 0.95;
           col = mix(col, fogCol, clamp(fog, 0.0, 1.0));
@@ -265,9 +304,19 @@
           // 向着太阳看时光柱最明显（米氏散射）
           float g = 0.6;
           float hg = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * sunAmt, 1.5);
-          col += vec3(1.0, 0.72, 0.42) * v * 0.0065 * (hg * 0.07 + 0.02) * (d < 0.99999 ? 1.0 : 0.3);
+          col += vec3(1.0, 0.70, 0.40) * v * 0.0105 * (hg * 0.075 + 0.025) * (d < 0.99999 ? 1.0 : 0.3);
         #endif
         col += texture2D(tBloom, vUv).rgb * uBloom;
+        #if USE_GOD
+          col += texture2D(tGod, vUv).rgb * vec3(1.0, 0.8, 0.55) * uGod * 0.9;
+        #endif
+        // 镜头光斑：太阳在画面里时，沿着画面中心对面出现几个淡淡的彩色光圈
+        vec2 fl = vec2(1.0) - vUv;
+        vec2 fd = (vec2(0.5) - fl) ;
+        vec3 ghosts = texture2D(tBloom, fl + fd * 0.45).rgb * vec3(0.9, 0.6, 0.3)
+                    + texture2D(tBloom, fl - fd * 0.35).rgb * vec3(0.4, 0.7, 1.0)
+                    + texture2D(tBloom, fl + fd * 1.25).rgb * vec3(0.6, 1.0, 0.6) * 0.6;
+        col += ghosts * uBloom * 0.035;
         col = aces(col);
         // 调色：暗部偏青、亮部偏暖，轻微提高饱和度和对比度
         float L = dot(col, vec3(0.2126, 0.7152, 0.0722));
@@ -284,9 +333,9 @@
       }`, {
       tColor: { value: null }, tDepth: { value: null }, tBloom: { value: null }, tAO: { value: null }, tVol: { value: null },
       uCamPos: U.uCamPos, uSunDir: U.uSunDir, uTexel: U.uTexel, uAOTexel: { value: new THREE.Vector2() }, uVolTexel: { value: new THREE.Vector2() },
-      uExposure: { value: EXPOSURE }, uTime: U.uTime, uBloom: { value: 0.11 }, uHit: { value: 0 },
+      uExposure: { value: EXPOSURE }, uTime: U.uTime, tGod: { value: null }, uGod: { value: 0 }, uBloom: { value: 0.11 }, uHit: { value: 0 },
       uNear: U.uNear, uFar: U.uFar, uProjInv: U.uProjInv, uCamWorld: U.uCamWorld,
-    }, RAY_VS, { USE_AO: 0, USE_VOL: 0 });
+    }, RAY_VS, { USE_AO: 0, USE_VOL: 0, USE_GOD: 0 });
     renderer.toneMappingExposure = EXPOSURE;
 
     // ---------- 阴影设置 ----------
@@ -352,6 +401,21 @@
         pass(aoMat, aoRT);
         compMat.uniforms.uAOTexel.value.set(1 / aoRT.width, 1 / aoRT.height);
       }
+      compMat.uniforms.uGod.value = 0;
+      if (godRT) {
+        camera.getWorldDirection(_fw);
+        const facing = _fw.dot(sunDir);
+        _sp.copy(sunDir).multiplyScalar(400).add(U.uCamPos.value).project(camera);
+        if (facing > 0.15 && Math.abs(_sp.x) < 1.6 && Math.abs(_sp.y) < 1.6) {
+          godMat.uniforms.tColor.value = sceneRT.texture;
+          godMat.uniforms.tDepth.value = sceneRT.depthTexture;
+          godMat.uniforms.uSunUv.value.set(_sp.x * 0.5 + 0.5, _sp.y * 0.5 + 0.5);
+          godMat.uniforms.uAspect.value = W / H;
+          pass(godMat, godRT);
+          compMat.uniforms.tGod.value = godRT.texture;
+          compMat.uniforms.uGod.value = Math.min(1, (facing - 0.15) * 2.5) * (1 - Math.max(0, Math.max(Math.abs(_sp.x), Math.abs(_sp.y)) - 1) / 0.6);
+        }
+      }
       if (volRT && sun.shadow.map) {
         volMat.uniforms.tDepth.value = sceneRT.depthTexture;
         volMat.uniforms.tShadow.value = sun.shadow.map.texture;
@@ -402,7 +466,7 @@
       shadowsOn() { return Q.shadow > 0; },
       shadowSize() { return Q.shadow || 1024; },
       get isTouch() { return !!opts.isTouch; },
-      info() { return { tier: tierName, pref, scale: +scale.toFixed(2), W, H, hdr: HDR === THREE.HalfFloatType, msaa: gl2 ? Q.msaa : 0, ao: !!aoRT, vol: !!volRT, frames: frameN, ms: +(ema * 1000).toFixed(1) }; },
+      info() { return { tier: tierName, pref, scale: +scale.toFixed(2), W, H, hdr: HDR === THREE.HalfFloatType, msaa: gl2 ? Q.msaa : 0, ao: !!aoRT, vol: !!volRT, god: !!godRT, frames: frameN, ms: +(ema * 1000).toFixed(1) }; },
     };
   }
 
