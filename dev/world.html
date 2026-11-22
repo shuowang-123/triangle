@@ -1,0 +1,70 @@
+<!doctype html><html><head><meta charset="utf-8"><title>world test</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#000}#info{position:fixed;left:8px;top:8px;color:#fff;font:12px monospace;z-index:9}</style></head>
+<body><div id="info">loading</div>
+<script src="../lib/three.min.js"></script>
+<script src="../lib/GLTFLoader.js"></script>
+<script src="../js/fx.js"></script>
+<script src="../js/world/noise.js"></script>
+<script src="../js/world/assets.js"></script>
+<script src="../js/world/physics.js"></script>
+<script src="../js/world/terrain.js"></script>
+<script src="../js/world/sky.js"></script>
+<script src="../js/world/flora.js"></script>
+<script src="../js/world/maps.js"></script>
+<script>
+(async function(){
+  const q = new URLSearchParams(location.search);
+  const info = document.getElementById('info');
+  const t0 = performance.now();
+  await new Promise(r=>{const s=document.createElement('script');s.src='../assets/core.js';s.onload=r;document.head.appendChild(s);});
+  const renderer = new THREE.WebGLRenderer({antialias:false, powerPreference:'high-performance'});
+  renderer.setPixelRatio(1); renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 7000);
+  const map = TSMaps.valley();
+  const sky = TSSky.create(renderer, scene, q.get('sky')||'day');
+  const sun = new THREE.DirectionalLight(sky.sunColor, sky.sunIntensity);
+  scene.add(sun, sun.target);
+  const sc = sun.shadow.camera; sc.left=-70; sc.right=70; sc.top=70; sc.bottom=-70; sc.near=1; sc.far=600; sun.shadow.bias=-0.0004; sun.shadow.normalBias=0.05;
+  const fx = FX.create(renderer, {sun, sunDir: sky.sunDir.clone(), isTouch:false});
+  fx.setAtmos({fogColor: sky.fogColor, sunColor: sky.sunColor, fog: sky.P.fog, fall: 0.006, exposure: sky.exposure});
+  const terrain = TSTerrain.create({ size: map.size, res: +(q.get('res')||1024), texRes: 512, height: map.height, post: map.post, far: map.far, splat: map.splat, wet: map.wet, sunDir: sky.lightDir, layers: map.layers, quality: q.get('tq')||'high' });
+  scene.add(terrain.group);
+  info.textContent = 'terrain '+Math.round(performance.now()-t0)+'ms';
+  const phys = TSPhysics.create(map.size, terrain.heightAt);
+  const rnd = TSNoise.mulberry(5);
+  const isOK = (x,z,r)=>{ for(const s of map.stamps) if (Math.hypot(x-s.x,z-s.z)<s.r+r) return false; for (const rd of map.roads) if (TSMaps.roadDist(x,z,rd)[0]<6+r*0.5) return false; return true; };
+  const sct = map.scatter(terrain, rnd, isOK);
+  const forest = q.get('notrees') ? {update(){}} : TSFlora.makeForest(scene, terrain, sct.trees, {a2c:true});
+  await TSFlora.makeRocks(scene, terrain, phys, sct.rocks);
+  await TSFlora.makeProps(scene, terrain, phys, sct.props);
+  const carpet = q.get('nograss') ? {update(){}} : await TSFlora.makeCarpet(scene, terrain, map.carpet, {a2c:true});
+  // water
+  const wm = new THREE.Mesh(new THREE.PlaneGeometry(600,600), new THREE.MeshStandardMaterial({color:0x223a40, roughness:0.05, metalness:0.0, transparent:true, opacity:0.85}));
+  wm.rotation.x=-Math.PI/2; wm.position.set(map.lake.x, map.water, map.lake.z); scene.add(wm);
+  const cx = +(q.get('x')||0), cz = +(q.get('z')||480), yaw = +(q.get('yaw')||0), pitch=+(q.get('pitch')||-0.05);
+  camera.position.set(cx, terrain.heightAt(cx,cz)+ +(q.get('h')||1.7), cz);
+  camera.rotation.order='YXZ'; camera.rotation.set(pitch, yaw, 0);
+  terrain.warm(cx, cz);
+  carpet.update(camera.position, 0);
+  forest.update(camera.position, 900);
+  await TSAssets.ready();
+  info.textContent += ' | trees '+sct.trees.length+' rocks '+sct.rocks.length+' total '+Math.round(performance.now()-t0)+'ms';
+  scene.traverse(o=>{ if (o.material && !o.material.isShaderMaterial) o.material.envMapIntensity = sky.envIntensity; });
+  let frames=0;
+  function frame(){
+    const p = camera.position;
+    const texel = 140/fx.shadowSize();
+    const fx0=Math.round(p.x/texel)*texel, fz0=Math.round(p.z/texel)*texel, fy=terrain.heightAt(p.x,p.z);
+    sun.position.set(fx0+sky.lightDir.x*300, fy+sky.lightDir.y*300, fz0+sky.lightDir.z*300); sun.target.position.set(fx0,fy,fz0);
+    terrain.update(p); sky.update(camera);
+    fx.render(scene, camera, 1/60);
+    frames++; window.__frames = frames;
+    if (!q.get('once')) requestAnimationFrame(frame);
+  }
+  frame();
+  window.__ready = true;
+  window.__cam = camera; window.__terrain = terrain; window.__sky = sky; window.__fx = fx; window.__scene=scene;
+})().catch(e=>{document.getElementById('info').textContent='ERR '+e.stack; console.error(e);});
+</script></body></html>

@@ -182,7 +182,7 @@
           float lit = 1.0;
           if (sc.x > 0.0 && sc.x < 1.0 && sc.y > 0.0 && sc.y < 1.0 && sc.z < 1.0)
             lit = step(sc.z - 0.002, unpackRGBAToDepth(texture2D(tShadow, sc.xy)));
-          float dens = 0.3 + 1.3 * exp(-max(p.y, 0.0) * 0.22);
+          float dens = 0.3 + 1.3 * exp(-max(p.y - uCamPos.y + 1.7, 0.0) * 0.12);
           acc += lit * dens * stepL;
           t += stepL;
         }
@@ -250,7 +250,8 @@
       }`, { tSrc: { value: null }, tAdd: { value: null }, uTexel: { value: new THREE.Vector2() } });
 
     // ---------- 合成：雾、光柱、泛光、色调、暗角、胶片颗粒 ----------
-    const compMat = mat(COMMON + SKY_GLSL + `
+    const compMat = mat(COMMON + `
+      uniform vec3 uSunDir; uniform vec3 uFogColor; uniform vec3 uSunCol; uniform float uFogDensity; uniform float uFogFall; uniform float uHaze; uniform float uVolK;
       uniform sampler2D tColor; uniform sampler2D tDepth; uniform sampler2D tBloom; uniform sampler2D tAO; uniform sampler2D tVol;
       uniform vec3 uCamPos; uniform vec2 uTexel; uniform vec2 uAOTexel; uniform vec2 uVolTexel;
       uniform float uExposure; uniform float uTime; uniform float uBloom; uniform float uHit;
@@ -272,7 +273,7 @@
         float d = texture2D(tDepth, uv).x;
         // 远处地面上的热浪：画面轻轻抖动
         float far0 = d < 0.99999 ? viewDepth(d) : 999.0;
-        float haze = smoothstep(45.0, 140.0, far0);
+        float haze = smoothstep(45.0, 140.0, far0) * uHaze;
         if (haze > 0.0) {
           vec2 hp = vec2(vUv.x * 60.0, vUv.y * 140.0 - uTime * 3.0);
           uv += (vec2(vn(hp), vn(hp + 7.3)) - 0.5) * vec2(0.0012, 0.0022) * haze;
@@ -298,15 +299,14 @@
                      + texture2D(tAO, vUv + uAOTexel * vec2(-0.5, 0.5)).r + texture2D(tAO, vUv + uAOTexel * vec2(0.5, 0.5)).r;
             col *= mix(1.0, ao * 0.25, 0.85);
           #endif
-          // 高度雾：贴着地面的沙尘更浓，远山被空气染成暖色
-          float a = 0.006, b = 0.05;
+          // 高度雾：低处浓、高处淡，远山被空气染成天空的颜色；朝着太阳的方向雾更亮
+          float b = uFogFall;
           float dy = dir.y * dist;
-          float fogI = a * exp(-b * max(uCamPos.y, 0.0)) * dist * (abs(dy) > 0.01 ? (1.0 - exp(-b * dy)) / (b * dy) : 1.0);
-          // 一团一团慢慢飘的沙尘，雾不是均匀的
+          float fogI = uFogDensity * exp(-b * uCamPos.y) * dist * (abs(dy) > 0.01 ? (1.0 - exp(-b * dy)) / (b * dy) : 1.0);
           vec3 wp = uCamPos + dir * dist;
-          fogI *= 0.6 + 0.9 * vn(wp.xz * 0.025 + vec2(uTime * 0.03, uTime * 0.012)) * (0.6 + 0.4 * vn(wp.xz * 0.09 - uTime * 0.05));
+          fogI *= 0.8 + 0.4 * vn(wp.xz * 0.006 + vec2(uTime * 0.01, uTime * 0.004));
           float fog = 1.0 - exp(-fogI);
-          vec3 fogCol = skyBase(normalize(vec3(dir.x, max(dir.y, 0.0) * 0.35, dir.z))) * 0.95;
+          vec3 fogCol = uFogColor + uSunCol * (pow(sunAmt, 6.0) * 0.45 + pow(sunAmt, 40.0) * 0.6);
           col = mix(col, fogCol, clamp(fog, 0.0, 1.0));
         }
         #if USE_VOL
@@ -316,11 +316,11 @@
           // 向着太阳看时光柱最明显（米氏散射）
           float g = 0.6;
           float hg = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * sunAmt, 1.5);
-          col += vec3(1.0, 0.70, 0.40) * v * 0.0105 * (hg * 0.075 + 0.025) * (d < 0.99999 ? 1.0 : 0.3);
+          col += uSunCol * v * 0.0105 * uVolK * (hg * 0.075 + 0.025) * (d < 0.99999 ? 1.0 : 0.3);
         #endif
         col += texture2D(tBloom, vUv).rgb * uBloom;
         #if USE_GOD
-          col += texture2D(tGod, vUv).rgb * vec3(1.0, 0.8, 0.55) * uGod * 0.9;
+          col += texture2D(tGod, vUv).rgb * uSunCol * 0.35 * uGod * 0.9;
         #endif
         // 镜头光斑：太阳在画面里时，沿着画面中心对面出现几个淡淡的彩色光圈
         vec2 fl = vec2(1.0) - vUv;
@@ -345,7 +345,7 @@
       }`, {
       tColor: { value: null }, tDepth: { value: null }, tBloom: { value: null }, tAO: { value: null }, tVol: { value: null },
       uCamPos: U.uCamPos, uSunDir: U.uSunDir, uTexel: U.uTexel, uAOTexel: { value: new THREE.Vector2() }, uVolTexel: { value: new THREE.Vector2() },
-      uExposure: { value: EXPOSURE }, uTime: U.uTime, tGod: { value: null }, uGod: { value: 0 }, uBloom: { value: 0.11 }, uHit: { value: 0 }, uSharp: { value: 0.4 },
+      uExposure: { value: EXPOSURE }, uTime: U.uTime, uFogColor: { value: new THREE.Vector3(0.5, 0.6, 0.75) }, uSunCol: { value: new THREE.Vector3(1, 0.9, 0.8) }, uFogDensity: { value: 0.0006 }, uFogFall: { value: 0.004 }, uHaze: { value: 0 }, uVolK: { value: 1 }, tGod: { value: null }, uGod: { value: 0 }, uBloom: { value: 0.11 }, uHit: { value: 0 }, uSharp: { value: 0.4 },
       uNear: U.uNear, uFar: U.uFar, uProjInv: U.uProjInv, uCamWorld: U.uCamWorld,
     }, RAY_VS, { USE_AO: 0, USE_VOL: 0, USE_GOD: 0, USE_SHARP: 0 });
     renderer.toneMappingExposure = EXPOSURE;
@@ -475,6 +475,17 @@
         ema = 1 / 60; slowT = fastT = 0;
       },
       setHit(v) { compMat.uniforms.uHit.value = v; },
+      // 每张地图 / 时间的雾和曝光
+      setAtmos(o) {
+        const u = compMat.uniforms;
+        if (o.fogColor) u.uFogColor.value.set(o.fogColor.r, o.fogColor.g, o.fogColor.b);
+        if (o.sunColor) u.uSunCol.value.set(o.sunColor.r, o.sunColor.g, o.sunColor.b);
+        if (o.fog != null) u.uFogDensity.value = o.fog;
+        if (o.fall != null) u.uFogFall.value = o.fall;
+        if (o.haze != null) u.uHaze.value = o.haze;
+        if (o.vol != null) u.uVolK.value = o.vol;
+        if (o.exposure != null) { u.uExposure.value = o.exposure; renderer.toneMappingExposure = o.exposure; }
+      },
       shadowsOn() { return Q.shadow > 0; },
       shadowSize() { return Q.shadow || 1024; },
       get isTouch() { return !!opts.isTouch; },
