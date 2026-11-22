@@ -13,6 +13,9 @@
 <div id="flash"></div>
 <div id="markers"></div>
 <div id="floaters"></div>
+<div id="edgeWarn" class="hidden">⚠ 快到地图边上了，往回走！</div>
+<div id="bigmap" class="hidden"><div class="bm-box"><canvas id="bigmapCanvas" width="900" height="900"></canvas><div class="bm-tip">🗺 大地图 · 黄色箭头是你 · 点一下或按 M 关闭</div></div></div>
+<div id="loading" class="screen hidden"><div class="panel load-panel"><div class="load-logo">雷霆特战队</div><div class="load-text" id="loadText">正在加载…</div><div class="bar load"><i id="loadFill"></i></div><div class="load-tip">第一次打开要多等一会儿：地图里有真实拍摄的岩石、树皮、草地和天空</div></div></div>
 
 <!-- 游戏中的信息栏 -->
 <div id="hud" class="hidden">
@@ -59,13 +62,14 @@
     <button id="tSwitch" class="tbtn switch">🔫<span>换枪</span></button>
     <button id="tHeal" class="tbtn heal">💉<span>打药</span></button>
     <button id="tCrouch" class="tbtn crouch">🧎<span>蹲下</span></button>
+    <button id="tMap" class="tbtn map">🗺<span>地图</span></button>
   </div>
 </div>
 
 <div id="clickToPlay" class="hidden">
   <div class="ctp-box">
     <div class="ctp-big" id="ctpBig">🖱️ 点一下屏幕，开始行动！</div>
-    <div class="ctp-small">鼠标瞄准 · 左键开枪 · 右键开镜 · R 换弹 · 1-9 换枪 · H 打药 · C 蹲下 · Shift 快跑 · Esc 暂停</div>
+    <div class="ctp-small">鼠标瞄准 · 左键开枪 · 右键开镜 · R 换弹 · 1-9 换枪 · H 打药 · C 蹲下 · Shift 快跑 · M 地图 · Esc 暂停</div>
   </div>
 </div>
 
@@ -77,7 +81,7 @@
   <div class="title-box">
     <div class="logo"><span class="t1">雷霆</span><span class="t2">特战队</span></div>
     <div class="logo-en">THUNDER SQUAD</div>
-    <div class="slogan">你是特种兵！9 种武器、急救药、宝箱和喷气背包，完成任务，打败坏蛋军团！</div>
+    <div class="slogan">你是特种兵！三张超大地图、15 个关卡：松林山谷、山间小镇、鹰巢要塞。9 种武器、急救药、宝箱和喷气背包，打败坏蛋军团！</div>
     <button class="btn huge" id="startBtn">▶ 开始任务</button>
     <div class="row">
       <button class="btn" id="bookBtn">📖 单词本</button>
@@ -99,6 +103,7 @@
       <div><b>快跑</b> Shift</div>
       <div><b>跳 / 飞</b> 空格（有喷气背包就按住）</div>
       <div><b>开宝箱</b> 站在宝箱旁边</div>
+      <div><b>大地图</b> M</div>
     </div>
     <div class="howto hidden" id="howtoTouch">
       <div><b>移动</b> 左下角摇杆</div>
@@ -109,6 +114,7 @@
       <div><b>换枪</b> 点 🔫 或点武器栏</div>
       <div><b>打药</b> 点 💉</div>
       <div><b>飞</b> 按住 ⬆</div>
+      <div><b>大地图</b> 点 🗺</div>
     </div>
     <div class="best">最高分：<b id="bestScore">0</b></div>
   </div>
@@ -117,7 +123,7 @@
 <!-- 任务选择 -->
 <div id="missions" class="screen hidden">
   <div class="panel wide">
-    <h2>🗺️ 选择任务</h2>
+    <h2>🗺️ 选择关卡</h2>
     <div class="m-grid" id="mGrid"></div>
     <button class="btn" id="mBack">◀ 返回</button>
   </div>
@@ -141,7 +147,7 @@
     <h2 id="cpTitle">✅ 任务完成！</h2>
     <div class="stars" id="cpStars"></div>
     <div class="over-stats" id="cpStats"></div>
-    <button class="btn huge" id="cpNext">下一个任务 ▶</button>
+    <button class="btn huge" id="cpNext">下一关 ▶</button>
     <button class="btn" id="cpHome">🏠 回到主页</button>
   </div>
 </div>
@@ -155,7 +161,7 @@
     <button class="btn toggle" id="musicToggle2">🎵 音乐：开</button>
     <button class="btn toggle" id="qualityToggle2">🎨 画质：自动</button>
     <div class="sens">瞄准灵敏度 <input type="range" id="sens" min="0.3" max="2.5" step="0.1" value="1"></div>
-    <button class="btn" id="restartBtn">🔁 重新开始这个任务</button>
+    <button class="btn" id="restartBtn">🔁 重新开始这一关</button>
     <button class="btn" id="quitBtn">🏠 回到主页</button>
   </div>
 </div>
@@ -200,31 +206,26 @@
 </div>
 
 <script src="lib/three.min.js"></script>
+<script src="lib/GLTFLoader.js"></script>
+<script src="lib/SkeletonUtils.js"></script>
 <script src="js/words.js"></script>
 <script src="js/audio.js"></script>
 <script src="js/learn.js"></script>
 <script src="js/humans.js"></script>
-<script src="lib/GLTFLoader.js"></script>
-<script src="lib/SkeletonUtils.js"></script>
 <script src="models/soldier-model.js"></script>
 <script src="js/soldier.js"></script>
 <script src="js/fx.js"></script>
 <script src="js/guns.js"></script>
-<script src="js/photos.js"></script>
-<script>
-  // 先把真实照片材质解码好，再启动游戏
-  (function () {
-    var P = window.PHOTOS || {}, keys = Object.keys(P), left = keys.length;
-    window.PHOTO_IMG = {};
-    function go() { var s = document.createElement('script'); s.src = 'js/game.js'; document.body.appendChild(s); }
-    if (!left) return go();
-    keys.forEach(function (k) {
-      var im = new Image();
-      im.onload = im.onerror = function () { if (--left === 0) go(); };
-      im.src = P[k];
-      window.PHOTO_IMG[k] = im;
-    });
-  })();
-</script>
+<script src="js/world/noise.js"></script>
+<script src="js/world/assets.js"></script>
+<script src="js/world/physics.js"></script>
+<script src="js/world/terrain.js"></script>
+<script src="js/world/sky.js"></script>
+<script src="js/world/flora.js"></script>
+<script src="js/world/build.js"></script>
+<script src="js/world/maps.js"></script>
+<script src="js/world/world.js"></script>
+<script src="js/levels.js"></script>
+<script src="js/game.js"></script>
 </body>
 </html>

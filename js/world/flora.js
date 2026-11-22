@@ -20,6 +20,17 @@
             float hk = max(transformed.y, 0.0) * ${k.toFixed(3)};
             transformed.x += sway * hk; transformed.z += sway * hk * 0.6;
           }`);
+      // 远处贴图缩小后透明度被平均掉，树叶会“变秃”；按 mip 级别补回来
+      sh.fragmentShader = sh.fragmentShader.replace('#include <alphatest_fragment>', `
+        #ifdef USE_MAP
+        {
+          vec2 tsz = vec2(textureSize(map, 0));
+          vec2 dx = dFdx(vMapUv * tsz), dy = dFdy(vMapUv * tsz);
+          float lod = max(0.0, 0.5 * log2(max(dot(dx, dx), dot(dy, dy))));
+          diffuseColor.a *= 1.0 + lod * 0.28;
+        }
+        #endif
+        #include <alphatest_fragment>`);
     };
     mat.customProgramCacheKey = () => 'wind' + tag;
     return mat;

@@ -8,7 +8,7 @@
     if (loading[name]) return loading[name];
     loading[name] = new Promise((res) => {
       const s = document.createElement('script');
-      s.src = 'assets/' + name + '.js';
+      s.src = (window.TS_ASSET_BASE || '') + 'assets/' + name + '.js';
       s.onload = () => res();
       s.onerror = () => { console.warn('素材包加载失败', name); res(); };
       document.head.appendChild(s);

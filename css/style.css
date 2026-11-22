@@ -304,3 +304,25 @@ body.touch .w-key { display: none; }
 }
 @media (max-width: 520px) { .m-grid { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+/* ---------- 大地图版 ---------- */
+.m-grid .m-map { grid-column: 1 / -1; text-align: left; font-size: 22px; font-weight: 900; color: var(--yellow); margin-top: 6px; border-bottom: 2px solid rgba(201, 180, 124, .4); padding-bottom: 4px; }
+.m-grid { grid-template-columns: repeat(5, 1fr); }
+.m-card .mc-icon { font-size: 36px; }
+.m-card .mc-name { font-size: 18px; }
+.m-card .mc-desc { font-size: 12px; }
+.panel.wide { max-width: 1100px; }
+@media (max-width: 900px) { .m-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 560px) { .m-grid { grid-template-columns: repeat(2, 1fr); } }
+#loading { z-index: 40; background: radial-gradient(ellipse at center, rgba(28, 34, 18, .92), rgba(0, 0, 0, .97)); }
+.load-panel { max-width: 560px; }
+.load-logo { font-size: 46px; font-weight: 900; color: var(--yellow); letter-spacing: 6px; text-shadow: 0 4px 0 #2a1600; }
+.load-text { font-size: 20px; margin: 14px 0 6px; color: #fff; }
+.bar.load { width: 100%; height: 16px; } .bar.load i { width: 0; background: linear-gradient(90deg, #d9a400, var(--yellow)); }
+.load-tip { font-size: 14px; color: var(--sand); margin-top: 12px; }
+#edgeWarn { position: fixed; top: 18%; left: 0; right: 0; text-align: center; z-index: 12; pointer-events: none; font-size: 26px; font-weight: 900; color: #ff6b5a; text-shadow: 0 3px 0 #000; animation: pulse 1s infinite; }
+#bigmap { position: fixed; inset: 0; z-index: 16; background: rgba(0, 0, 0, .55); display: flex; align-items: center; justify-content: center; }
+#bigmap .bm-box { text-align: center; }
+#bigmapCanvas { width: min(86vh, 92vw); height: min(86vh, 92vw); border: 3px solid var(--khaki); border-radius: 10px; box-shadow: 0 20px 60px rgba(0, 0, 0, .7); }
+#bigmap .bm-tip { color: var(--sand); font-size: 16px; margin-top: 6px; text-shadow: 0 2px 2px #000; }
+#tMap { width: 58px; height: 58px; right: calc(40px + env(safe-area-inset-right, 0px)); bottom: 430px; }
