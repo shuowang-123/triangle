@@ -137,8 +137,19 @@ html, body {
 .w-name { font-size: 20px; color: var(--sand); letter-spacing: 2px; }
 .w-ammo b { font-size: 56px; color: #fff; line-height: 1; } .w-ammo span { font-size: 26px; color: #ddd; margin-left: 4px; }
 .w-ammo.low b { color: var(--red); }
-.w-slots { display: flex; gap: 6px; justify-content: flex-end; margin: 6px 0; }
-.w-slot { font-size: 13px; padding: 4px 8px; border-radius: 6px; border: 2px solid rgba(255, 255, 255, .3); background: rgba(0, 0, 0, .45); color: #ccc; }
+.w-slots { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; margin: 6px 0; max-width: 430px; margin-left: auto; }
+.w-slot { font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 2px solid rgba(255, 255, 255, .3); background: rgba(0, 0, 0, .45); color: #ccc; }
+.w-slot i { font-style: normal; color: #999; margin-right: 3px; font-size: 11px; }
+.w-slot.on i { color: var(--yellow); }
+body.touch .w-slot { pointer-events: auto; padding: 6px 8px; font-size: 13px; }
+.w-mode { font-size: 13px; letter-spacing: 0; color: #ddd; border: 1px solid rgba(255,255,255,.4); border-radius: 4px; padding: 0 5px; vertical-align: middle; }
+.w-meds { margin-right: 14px; } .w-meds b { color: var(--green); font-size: 26px; }
+#jetBox { margin-top: 6px; font-size: 15px; color: #7fdcff; }
+.bar.jet { height: 10px; } .bar.jet i { background: linear-gradient(90deg, #2f8fd8, #7fdcff); }
+#jetBox.low .bar.jet i { background: linear-gradient(90deg, #a10e14, var(--orange)); }
+#useBar { position: absolute; left: 50%; top: 66%; transform: translateX(-50%); width: 260px; text-align: center; }
+#useBar .hb-label { color: #6ee36a; }
+#useBar .bar { height: 14px; } #useBar .bar i { background: linear-gradient(90deg, #2f9e44, #6ee36a); }
 .w-slot.on { border-color: var(--orange); color: #fff; background: rgba(255, 138, 31, .35); }
 .w-slot.lock { opacity: .35; }
 .w-gren { font-size: 22px; } .w-gren b { color: var(--yellow); font-size: 28px; }
@@ -146,13 +157,13 @@ html, body {
 
 #crosshair { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transition: transform .1s; }
 #crosshair i { position: absolute; background: #fff; box-shadow: 0 0 3px #000; }
-#crosshair i:nth-child(1) { width: 2px; height: 10px; left: -1px; top: -18px; }
-#crosshair i:nth-child(2) { width: 2px; height: 10px; left: -1px; top: 8px; }
-#crosshair i:nth-child(3) { width: 10px; height: 2px; left: -18px; top: -1px; }
-#crosshair i:nth-child(4) { width: 10px; height: 2px; left: 8px; top: -1px; }
+#crosshair i:nth-child(1) { width: 2px; height: 10px; left: -1px; top: calc(-10px - var(--gap, 8px)); }
+#crosshair i:nth-child(2) { width: 2px; height: 10px; left: -1px; top: var(--gap, 8px); }
+#crosshair i:nth-child(3) { width: 10px; height: 2px; left: calc(-10px - var(--gap, 8px)); top: -1px; }
+#crosshair i:nth-child(4) { width: 10px; height: 2px; left: var(--gap, 8px); top: -1px; }
 #crosshair b { position: absolute; width: 4px; height: 4px; left: -2px; top: -2px; border-radius: 50%; background: var(--orange); }
 #crosshair.hot i { background: var(--red); }
-#crosshair.ads { transform: scale(.6); }
+#crosshair { transition: none; }
 #hitmarker { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(1.6); font-size: 34px; font-weight: 900; color: #fff; opacity: 0; transition: opacity .15s, transform .15s; }
 #hitmarker.on { opacity: 1; transform: translate(-50%, -50%) scale(1); transition: none; }
 #hitmarker.head { color: var(--yellow); }
@@ -193,6 +204,8 @@ html, body {
 #tJump { width: 70px; height: 70px; right: calc(50px + env(safe-area-inset-right, 0px)); bottom: 335px; }
 #tReload { width: 64px; height: 64px; right: calc(240px + env(safe-area-inset-right, 0px)); bottom: 200px; }
 #tSwitch { width: 64px; height: 64px; right: calc(140px + env(safe-area-inset-right, 0px)); bottom: 340px; }
+#tHeal { width: 64px; height: 64px; right: calc(250px + env(safe-area-inset-right, 0px)); bottom: 290px; }
+#tCrouch { width: 60px; height: 60px; right: calc(250px + env(safe-area-inset-right, 0px)); bottom: 120px; }
 #joyBase { position: absolute; left: calc(40px + env(safe-area-inset-left, 0px)); bottom: 110px; width: 150px; height: 150px; border-radius: 50%; border: 3px solid rgba(201, 180, 124, .7); background: rgba(0, 0, 0, .2); }
 #joyKnob { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; background: rgba(233, 211, 161, .7); }
 body.touch .w-key { display: none; }

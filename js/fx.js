@@ -39,9 +39,9 @@
 
   const QUALITY = {
     //          渲染比例  抗锯齿 阴影   阴影图  AO     光柱步数 光柱分辨率 泛光层数
-    high:   { scale: 1.0,  msaa: 4, shadow: 4096, soft: true,  ao: 12,    vol: 32, volDiv: 2, bloom: 5 },
-    medium: { scale: 0.85, msaa: 4, shadow: 2048, soft: false, ao: 6,     vol: 16, volDiv: 3, bloom: 4 },
-    low:    { scale: 0.7,  msaa: 0, shadow: 0,    soft: false, ao: false, vol: 0,  volDiv: 4, bloom: 3 },
+    high:   { scale: 1.0,  msaa: 4, shadow: 4096, soft: true,  ao: 12,    vol: 32, volDiv: 2, bloom: 5, sharp: 0.45 },
+    medium: { scale: 0.85, msaa: 4, shadow: 2048, soft: false, ao: 6,     vol: 16, volDiv: 3, bloom: 4, sharp: 0.4 },
+    low:    { scale: 0.7,  msaa: 0, shadow: 0,    soft: false, ao: false, vol: 0,  volDiv: 4, bloom: 3, sharp: 0 },
   };
   const ORDER = ['low', 'medium', 'high'];
 
@@ -115,6 +115,9 @@
       compMat.defines.USE_AO = Q.ao ? 1 : 0;
       compMat.defines.USE_VOL = volRT ? 1 : 0;
       compMat.defines.USE_GOD = godRT ? 1 : 0;
+      compMat.defines.USE_SHARP = Q.sharp > 0 ? 1 : 0;
+      // 渲染分辨率越低，锐化越多一点
+      compMat.uniforms.uSharp.value = Q.sharp * (1 + (1 - scale) * 1.5);
       compMat.needsUpdate = true;
     }
 
@@ -251,7 +254,7 @@
       uniform sampler2D tColor; uniform sampler2D tDepth; uniform sampler2D tBloom; uniform sampler2D tAO; uniform sampler2D tVol;
       uniform vec3 uCamPos; uniform vec2 uTexel; uniform vec2 uAOTexel; uniform vec2 uVolTexel;
       uniform float uExposure; uniform float uTime; uniform float uBloom; uniform float uHit;
-      uniform sampler2D tGod; uniform float uGod;
+      uniform sampler2D tGod; uniform float uGod; uniform float uSharp;
       varying vec2 vUv; varying vec3 vRay;
       vec3 fxFit(vec3 v) { vec3 a = v * (v + 0.0245786) - 0.000090537; vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081; return a / b; }
       vec3 aces(vec3 c) {
@@ -276,6 +279,15 @@
           d = texture2D(tDepth, uv).x;
         }
         vec3 col = texture2D(tColor, uv).rgb;
+        #if USE_SHARP
+          // 锐化：把边缘和纹理细节变清楚（在压缩过的亮度里做，太阳边上不会出白边）
+          vec3 nb = texture2D(tColor, uv + vec2(uTexel.x, 0.0)).rgb + texture2D(tColor, uv - vec2(uTexel.x, 0.0)).rgb
+                  + texture2D(tColor, uv + vec2(0.0, uTexel.y)).rgb + texture2D(tColor, uv - vec2(0.0, uTexel.y)).rgb;
+          nb *= 0.25;
+          vec3 ca = col / (1.0 + col), na = nb / (1.0 + nb);
+          vec3 sa = clamp(ca + (ca - na) * uSharp, 0.0, 0.995);
+          col = sa / (1.0 - sa);
+        #endif
         float rl = length(vRay);
         vec3 dir = vRay / rl;
         float sunAmt = max(dot(dir, uSunDir), 0.0);
@@ -333,9 +345,9 @@
       }`, {
       tColor: { value: null }, tDepth: { value: null }, tBloom: { value: null }, tAO: { value: null }, tVol: { value: null },
       uCamPos: U.uCamPos, uSunDir: U.uSunDir, uTexel: U.uTexel, uAOTexel: { value: new THREE.Vector2() }, uVolTexel: { value: new THREE.Vector2() },
-      uExposure: { value: EXPOSURE }, uTime: U.uTime, tGod: { value: null }, uGod: { value: 0 }, uBloom: { value: 0.11 }, uHit: { value: 0 },
+      uExposure: { value: EXPOSURE }, uTime: U.uTime, tGod: { value: null }, uGod: { value: 0 }, uBloom: { value: 0.11 }, uHit: { value: 0 }, uSharp: { value: 0.4 },
       uNear: U.uNear, uFar: U.uFar, uProjInv: U.uProjInv, uCamWorld: U.uCamWorld,
-    }, RAY_VS, { USE_AO: 0, USE_VOL: 0, USE_GOD: 0 });
+    }, RAY_VS, { USE_AO: 0, USE_VOL: 0, USE_GOD: 0, USE_SHARP: 0 });
     renderer.toneMappingExposure = EXPOSURE;
 
     // ---------- 阴影设置 ----------
@@ -466,6 +478,7 @@
       shadowsOn() { return Q.shadow > 0; },
       shadowSize() { return Q.shadow || 1024; },
       get isTouch() { return !!opts.isTouch; },
+      get hdr() { return HDR === THREE.HalfFloatType; },
       info() { return { tier: tierName, pref, scale: +scale.toFixed(2), W, H, hdr: HDR === THREE.HalfFloatType, msaa: gl2 ? Q.msaa : 0, ao: !!aoRT, vol: !!volRT, god: !!godRT, frames: frameN, ms: +(ema * 1000).toFixed(1) }; },
     };
   }

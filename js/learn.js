@@ -3,6 +3,9 @@ window.Learn = (function () {
   const WORDS = window.WORDS;
   const KEY = 'tri_words_v1';
   let stats = {};      // { en: { seen: 1, right: n, wrong: n } }
+  // 学习模式是必做的，不能关（家长要求）。以后想恢复开关，把 FORCED 改成 false，
+  // 再把 index.html 里的 learnToggle 按钮加回来即可。
+  const FORCED = true;
   let enabled = true;
   let sessionRight = 0;
 
@@ -201,8 +204,10 @@ window.Learn = (function () {
   }
 
   return {
-    get enabled() { return enabled; },
+    get enabled() { return FORCED || enabled; },
+    forced: FORCED,
     setEnabled(v) {
+      if (FORCED) return;
       enabled = v;
       try { localStorage.setItem('tri_learn', v ? 'on' : 'off'); } catch (e) {}
     },
