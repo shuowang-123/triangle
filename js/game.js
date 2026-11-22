@@ -60,6 +60,35 @@
     if (rx) t.repeat.set(rx, ry || rx);
     return t;
   }
+  // 真实照片材质（js/photos.js，Poly Haven CC0）：页面先把图片解码好，再启动游戏
+  const PH = window.PHOTO_IMG || {};
+  const hasPhoto = k => { const im = PH[k]; return !!(im && im.complete && im.naturalWidth > 0); };
+  // 把照片画进画布，上面还能再画字、条纹；没有照片时退回原来的画法
+  function photoTex(k, w, h, over, fallback, rx, ry) {
+    return canvasTex(w, h, (g, W, H) => {
+      if (hasPhoto(k)) { const tw = over && over.tile ? over.tile : 1; for (let i = 0; i < tw; i++) g.drawImage(PH[k], i * W / tw, 0, W / tw, H); }
+      else fallback(g, W, H);
+      if (over && over.draw) over.draw(g, W, H);
+    }, rx, ry);
+  }
+  function photoNormal(k, rx, ry, fallback) {
+    if (!hasPhoto(k + '_n')) return fallback || null;
+    const t = new THREE.Texture(PH[k + '_n']);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = maxAniso;
+    t.needsUpdate = true;
+    if (rx) t.repeat.set(rx, ry || rx);
+    return t;
+  }
+  function photoMap(k, rx, ry) {
+    const t = new THREE.Texture(PH[k]);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = maxAniso;
+    t.needsUpdate = true;
+    if (rx) t.repeat.set(rx, ry || rx);
+    return t;
+  }
   // 用一张“高度图”算出法线贴图：让平面看起来有凹凸（木板缝、集装箱波纹、沙袋鼓包）
   function normalTex(w, h, drawHeight, strength, rx, ry) {
     const c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -124,18 +153,97 @@
     g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
     return new THREE.CanvasTexture(c);
   })();
+  // 烟雾/火焰用的云团纹理：多层噪声 + 圆形淡出，再加一点假的光照（上亮下暗）
+  function cloudTex(seed, fire) {
+    const N = 128, c = document.createElement('canvas'); c.width = c.height = N;
+    const g = c.getContext('2d'), img = g.createImageData(N, N), G = 64, grid = new Float32Array(G * G);
+    for (let i = 0; i < G * G; i++) grid[i] = Math.random();
+    const vn = (x, y) => {
+      const x0 = Math.floor(x), y0 = Math.floor(y), tx = x - x0, ty = y - y0, sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+      const a = grid[(y0 & 63) * G + (x0 & 63)], b = grid[(y0 & 63) * G + ((x0 + 1) & 63)], cc = grid[((y0 + 1) & 63) * G + (x0 & 63)], d = grid[((y0 + 1) & 63) * G + ((x0 + 1) & 63)];
+      return a + (b - a) * sx + (cc - a) * sy + (a - b - cc + d) * sx * sy;
+    };
+    const fbm = (x, y) => { let v = 0, a = 0.5, f = 1; for (let o = 0; o < 5; o++) { v += vn(x * f + o * 17.3 + seed * 31, y * f + o * 9.1) * a; a *= 0.5; f *= 2.03; } return v; };
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const u = x / N * 6, v = y / N * 6, n = fbm(u, v);
+      const dx = x / N - 0.5, dy = y / N - 0.5, r = Math.sqrt(dx * dx + dy * dy) * 2;
+      const fall = Math.max(0, 1 - r * r) ** 1.4;
+      const a = Math.max(0, Math.min(1, (n * 1.9 - 0.55 + fall * 0.55))) * fall;
+      const i = (y * N + x) * 4;
+      if (fire) {
+        const h = Math.min(1, n * 1.3 * fall + fall * 0.5);
+        img.data[i] = 255; img.data[i + 1] = 120 + h * 135 | 0; img.data[i + 2] = 40 + h * h * 200 | 0;
+      } else {
+        const lit = Math.max(0, Math.min(1, 0.62 + (fbm(u + 0.35, v + 0.45) - n) * 1.6 - dy * 0.55));
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = 150 + lit * 105 | 0;
+      }
+      img.data[i + 3] = a * 255 | 0;
+    }
+    g.putImageData(img, 0, 0);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }
+  const smokeTexs = [0, 1, 2, 3].map(i => cloudTex(i, false));
+  const fireTexs = [4, 5].map(i => cloudTex(i, true));
+  // 枪口火焰：正面是星形火花，侧面是喷出去的火舌
+  const flashStarTex = (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const g = c.getContext('2d');
+    g.translate(64, 64); g.globalCompositeOperation = 'lighter';
+    const n = 7;
+    for (let i = 0; i < n; i++) {
+      g.save(); g.rotate(i / n * Math.PI * 2 + Math.random() * 0.4);
+      const l = rand(38, 62), wd = rand(5, 9), gr = g.createLinearGradient(0, 0, l, 0);
+      gr.addColorStop(0, 'rgba(255,240,200,0.9)'); gr.addColorStop(0.5, 'rgba(255,170,60,0.55)'); gr.addColorStop(1, 'rgba(255,100,20,0)');
+      g.fillStyle = gr; g.beginPath(); g.moveTo(0, -wd); g.quadraticCurveTo(l * 0.5, -wd * 0.4, l, 0); g.quadraticCurveTo(l * 0.5, wd * 0.4, 0, wd); g.fill();
+      g.restore();
+    }
+    const gr = g.createRadialGradient(0, 0, 0, 0, 0, 34);
+    gr.addColorStop(0, 'rgba(255,255,240,1)'); gr.addColorStop(0.35, 'rgba(255,200,110,0.8)'); gr.addColorStop(1, 'rgba(255,120,30,0)');
+    g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 34, 0, 7); g.fill();
+    return new THREE.CanvasTexture(c);
+  })();
+  const flashSideTex = (() => {
+    const c = document.createElement('canvas'); c.width = 64; c.height = 128;
+    const g = c.getContext('2d'); g.globalCompositeOperation = 'lighter';
+    for (let k = 0; k < 3; k++) {
+      const top = rand(5, 40), wd = rand(10, 22), gr = g.createLinearGradient(0, 128, 0, top);
+      gr.addColorStop(0, 'rgba(255,250,220,1)'); gr.addColorStop(0.3, 'rgba(255,190,90,0.8)'); gr.addColorStop(1, 'rgba(255,90,10,0)');
+      g.fillStyle = gr; g.beginPath(); g.moveTo(32 - wd, 128); g.quadraticCurveTo(32 - wd * 0.7, 60, 32 + rand(-8, 8), top); g.quadraticCurveTo(32 + wd * 0.7, 60, 32 + wd, 128); g.fill();
+    }
+    return new THREE.CanvasTexture(c);
+  })();
   const sandTex = canvasTex(256, 256, (g, w, h) => {
     g.fillStyle = '#d6b27a'; g.fillRect(0, 0, w, h);
     speckle(g, w, h, 2600, ['#c9a46c', '#e2c290', '#bf9960', '#e9cc9c'], 2.5);
     g.strokeStyle = 'rgba(160,120,70,0.18)'; g.lineWidth = 3;
     for (let i = 0; i < 6; i++) { g.beginPath(); const y = Math.random() * h; g.moveTo(0, y); g.bezierCurveTo(w * 0.3, y + 14, w * 0.6, y - 14, w, y); g.stroke(); }
   }, 70);
-  const roadTex = canvasTex(128, 128, (g, w, h) => {
+  const roadTex = photoTex('asphalt', 512, 256, {
+    tile: 2,
+    draw(g, w, h) {
+      // 褪色的黄线，边上有沙子盖住
+      g.fillStyle = 'rgba(214,180,70,0.85)'; g.fillRect(w / 2 - 5, 0, 10, h * 0.55);
+      const gr = g.createLinearGradient(0, 0, w, 0);
+      gr.addColorStop(0, 'rgba(196,160,110,0.75)'); gr.addColorStop(0.12, 'rgba(196,160,110,0)'); gr.addColorStop(0.88, 'rgba(196,160,110,0)'); gr.addColorStop(1, 'rgba(196,160,110,0.75)');
+      g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    },
+  }, (g, w, h) => {
     g.fillStyle = '#6e6658'; g.fillRect(0, 0, w, h);
     speckle(g, w, h, 900, ['#5e5749', '#7d7566', '#686052'], 2);
-    g.fillStyle = '#e8c547'; g.fillRect(w / 2 - 3, 0, 6, h * 0.55);
-  }, 1, 12);
-  const crateTex = canvasTex(128, 128, (g, w, h) => {
+  }, 1, 24);
+  const crateTex = hasPhoto('planks') ? photoTex('planks', 256, 256, {
+    draw(g, w, h) {
+      // 箱子的边框和斜撑：同一种木头，颜色深一点
+      g.save(); g.globalCompositeOperation = 'multiply'; g.fillStyle = 'rgb(150,120,95)';
+      const b = 24;
+      g.fillRect(0, 0, w, b); g.fillRect(0, h - b, w, b); g.fillRect(0, 0, b, h); g.fillRect(w - b, 0, b, h);
+      g.lineWidth = b; g.strokeStyle = 'rgb(160,130,100)'; g.beginPath(); g.moveTo(16, 16); g.lineTo(w - 16, h - 16); g.stroke();
+      g.restore();
+      g.fillStyle = 'rgba(30,20,10,0.55)'; for (const [x, y] of [[12, 12], [w - 12, 12], [12, h - 12], [w - 12, h - 12]]) { g.beginPath(); g.arc(x, y, 4, 0, 7); g.fill(); }
+      g.fillStyle = 'rgba(25,20,15,0.6)'; g.font = 'bold 22px monospace'; g.textAlign = 'center'; g.fillText('7.62 AMMO', w * 0.5, h * 0.28);
+    },
+  }) : canvasTex(128, 128, (g, w, h) => {
     g.fillStyle = '#a5743f'; g.fillRect(0, 0, w, h);
     g.strokeStyle = '#7a5129'; g.lineWidth = 3;
     for (let y = 0; y < h; y += 21) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
@@ -146,6 +254,23 @@
     speckle(g, w, h, 300, ['rgba(60,35,15,0.25)', 'rgba(255,220,170,0.15)'], 2);
   });
   function containerTex(base) {
+    if (hasPhoto('container')) return canvasTex(512, 256, (g, w, h) => {
+      // 真实的集装箱钢板照片染上颜色，再加锈迹、掉漆和喷字
+      g.fillStyle = base; g.fillRect(0, 0, w, h);
+      g.globalCompositeOperation = 'multiply';
+      g.drawImage(PH.container, 0, 0, w / 2, h); g.drawImage(PH.container, w / 2, 0, w / 2, h);
+      g.globalCompositeOperation = 'source-over';
+      g.globalAlpha = 0.35; g.fillStyle = base; g.fillRect(0, 0, w, h); g.globalAlpha = 1;
+      for (let i = 0; i < 26; i++) {
+        const x = Math.random() * w, l = rand(20, 110), gr = g.createLinearGradient(0, 0, 0, l);
+        gr.addColorStop(0, 'rgba(110,55,20,0.55)'); gr.addColorStop(1, 'rgba(110,55,20,0)');
+        g.fillStyle = gr; g.fillRect(x, 0, rand(2, 6), l);
+      }
+      for (let i = 0; i < 60; i++) { g.fillStyle = `rgba(${90 + Math.random() * 40 | 0},${50 + Math.random() * 20 | 0},25,${rand(0.2, 0.5)})`; g.beginPath(); g.ellipse(Math.random() * w, Math.random() < 0.6 ? rand(h - 40, h) : Math.random() * h, rand(2, 10), rand(1, 5), 0, 0, 7); g.fill(); }
+      g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(0, 0, w, 10); g.fillRect(0, h - 10, w, 10);
+      g.fillStyle = 'rgba(240,236,225,0.7)'; g.font = 'bold 34px sans-serif'; g.textAlign = 'center'; g.fillText('THUNDER CARGO', w / 2, 136);
+      g.font = 'bold 15px monospace'; g.fillText('TSQU 207431 4  22G1', w / 2, 162);
+    });
     return canvasTex(256, 128, (g, w, h) => {
       g.fillStyle = base; g.fillRect(0, 0, w, h);
       for (let x = 0; x < w; x += 12) { g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(x, 0, 4, h); g.fillStyle = 'rgba(255,255,255,0.1)'; g.fillRect(x + 5, 0, 2, h); }
@@ -155,29 +280,41 @@
     });
   }
   const CONTAINER_TEX = ['#2f6b8f', '#a8432f', '#6b7a35', '#c48a2c'].map(containerTex);
-  const concreteTex = canvasTex(128, 128, (g, w, h) => {
+  const concreteTex = hasPhoto('wall') ? photoTex('wall', 256, 256) : canvasTex(128, 128, (g, w, h) => {
     g.fillStyle = '#b1aba0'; g.fillRect(0, 0, w, h);
     speckle(g, w, h, 1200, ['#a39d92', '#bdb7ac', '#979186'], 2);
     g.fillStyle = 'rgba(0,0,0,0.15)'; g.fillRect(0, 62, w, 3);
   });
-  const barrierTex = canvasTex(128, 64, (g, w, h) => {
-    g.fillStyle = '#b8b2a7'; g.fillRect(0, 0, w, h);
-    speckle(g, w, h, 500, ['#a39d92', '#c6c0b5'], 2);
+  const barrierTex = canvasTex(256, 128, (g, w, h) => {
+    if (hasPhoto('concrete')) { g.drawImage(PH.concrete, 0, 0, w / 2, h); g.drawImage(PH.concrete, w / 2, 0, w / 2, h); g.fillStyle = 'rgba(190,180,160,0.25)'; g.fillRect(0, 0, w, h); }
+    else { g.fillStyle = '#b8b2a7'; g.fillRect(0, 0, w, h); speckle(g, w, h, 500, ['#a39d92', '#c6c0b5'], 2); }
+    g.globalAlpha = 0.85;
     for (let x = -20; x < w; x += 24) { g.fillStyle = '#f0b429'; g.beginPath(); g.moveTo(x, h); g.lineTo(x + 12, h); g.lineTo(x + 24, h - 14); g.lineTo(x + 12, h - 14); g.fill(); }
+    g.globalAlpha = 1;
     g.fillStyle = '#222'; g.fillRect(0, h - 14, w, 1);
+    // 底部的泥土
+    const gr = g.createLinearGradient(0, h, 0, h * 0.6); gr.addColorStop(0, 'rgba(120,95,60,0.6)'); gr.addColorStop(1, 'rgba(120,95,60,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
   });
-  const sandbagTex = canvasTex(128, 64, (g, w, h) => {
+  const sandbagTex = canvasTex(256, 128, (g, w, h) => {
     g.fillStyle = '#7d6a45'; g.fillRect(0, 0, w, h);
     for (let r = 0; r < 4; r++) for (let c = -1; c < 5; c++) {
-      const x = c * 32 + (r % 2) * 16, y = r * 16;
-      g.fillStyle = ['#bda57a', '#b39b6f', '#c4ad83'][(r + c + 3) % 3];
-      g.beginPath(); g.ellipse(x + 16, y + 8, 15, 7, 0, 0, Math.PI * 2); g.fill();
+      const x = (c * 32 + (r % 2) * 16) * 2, y = r * 32;
+      g.fillStyle = ['#d8c8a8', '#cdbd9a', '#e0d0b0'][(r + c + 3) % 3];
+      g.beginPath(); g.ellipse(x + 32, y + 16, 30, 14, 0, 0, Math.PI * 2); g.fill();
+    }
+    if (hasPhoto('burlap')) {
+      // 麻布的纹理
+      g.globalCompositeOperation = 'multiply';
+      for (let i = 0; i < 2; i++) g.drawImage(PH.burlap, i * w / 2, 0, w / 2, h);
+      g.globalCompositeOperation = 'source-over';
     }
   });
-  const barrelTex = canvasTex(128, 64, (g, w, h) => {
-    g.fillStyle = '#c0392b'; g.fillRect(0, 0, w, h);
-    g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(0, 12, w, 4); g.fillRect(0, h - 16, w, 4);
-    g.fillStyle = '#ffd23f'; g.font = 'bold 26px sans-serif'; g.fillText('⚠', 8, 44); g.fillText('⚠', 72, 44);
+  const barrelTex = canvasTex(256, 128, (g, w, h) => {
+    if (hasPhoto('barrel')) { g.drawImage(PH.barrel, 0, 0, w / 2, h); g.drawImage(PH.barrel, w / 2, 0, w / 2, h); }
+    else { g.fillStyle = '#c0392b'; g.fillRect(0, 0, w, h); }
+    g.fillStyle = 'rgba(0,0,0,0.3)'; g.fillRect(0, 24, w, 7); g.fillRect(0, h - 32, w, 7);
+    g.fillStyle = 'rgba(255,210,63,0.85)'; g.font = 'bold 48px sans-serif'; g.fillText('⚠', 18, 86); g.fillText('⚠', 146, 86);
   });
   const helipadTex = canvasTex(256, 256, (g, w, h) => {
     g.fillStyle = '#4c4a44'; g.beginPath(); g.arc(128, 128, 126, 0, Math.PI * 2); g.fill();
@@ -305,20 +442,30 @@
     }
     geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
     geo.computeVertexNormals();
-    const t = sandTex.clone(); t.needsUpdate = true; t.repeat.set(88, 88);
-    const gm = new THREE.MeshStandardMaterial({ map: t, vertexColors: true, roughness: 1 });
+    const photoGround = hasPhoto('ground');
+    const t = photoGround ? photoMap('ground', 250, 250) : (() => { const c = sandTex.clone(); c.needsUpdate = true; c.repeat.set(88, 88); return c; })();
+    const gm = new THREE.MeshStandardMaterial({ map: t, vertexColors: true, roughness: 1, normalMap: photoGround ? photoNormal('ground', 250, 250) : null, normalScale: new THREE.Vector2(1.3, 1.3) });
+    const sandB = { value: photoGround && hasPhoto('sand') ? photoMap('sand') : null };
     // 着色器里加上风吹出来的沙纹（低角度阳光下能看到明暗起伏）和大片的颜色深浅变化，地面就不会一眼看出重复贴图
     gm.onBeforeCompile = sh => {
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
         .replace('#include <project_vertex>', '#include <project_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+      if (sandB.value) sh.uniforms.tSandB = sandB;
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', `#include <common>
           varying vec3 vWPos;
+          uniform sampler2D tSandB;
           float gh(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
           float gn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
             return mix(mix(gh(i), gh(i + vec2(1, 0)), f.x), mix(gh(i + vec2(0, 1)), gh(i + vec2(1, 1)), f.x), f.y); }`)
         .replace('#include <map_fragment>', `#include <map_fragment>
+          ${sandB.value ? `{
+            // 第二张沙地照片按不同大小铺，用噪声混在一起，就看不出重复的格子
+            vec3 sb = texture2D(tSandB, vWPos.xz / 6.7).rgb;
+            float bl = smoothstep(0.38, 0.68, gn(vWPos.xz * 0.045) * 0.7 + gn(vWPos.xz * 0.19) * 0.3);
+            diffuseColor.rgb = mix(diffuseColor.rgb, sb * 1.05, bl);
+          }` : ''}
           float macro = gn(vWPos.xz * 0.035) * 0.6 + gn(vWPos.xz * 0.11) * 0.4;
           diffuseColor.rgb *= mix(0.82, 1.12, macro) * mix(0.94, 1.04, gn(vWPos.xz * 0.9));`)
         .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
@@ -341,11 +488,12 @@
     return m;
   })();
   {
-    const roadMat = new THREE.MeshStandardMaterial({ map: roadTex, roughness: 0.95 });
+    const roadN = photoNormal('asphalt', 2, 24);
+    const roadMat = new THREE.MeshStandardMaterial({ map: roadTex, normalMap: roadN, roughness: 0.92 });
     const r1 = new THREE.Mesh(new THREE.PlaneGeometry(6, 90), roadMat);
     r1.rotation.x = -Math.PI / 2; r1.position.set(0, 0.01, 0); r1.receiveShadow = true; scene.add(r1);
     const t2 = roadTex.clone(); t2.needsUpdate = true;
-    const r2 = new THREE.Mesh(new THREE.PlaneGeometry(6, 90), new THREE.MeshStandardMaterial({ map: t2, roughness: 0.95 }));
+    const r2 = new THREE.Mesh(new THREE.PlaneGeometry(6, 90), new THREE.MeshStandardMaterial({ map: t2, normalMap: roadN, roughness: 0.92 }));
     r2.rotation.x = -Math.PI / 2; r2.rotation.z = Math.PI / 2; r2.position.set(0, 0.012, -4); r2.receiveShadow = true; scene.add(r2);
     const pad = new THREE.Mesh(new THREE.CircleGeometry(6, 48), new THREE.MeshStandardMaterial({ map: helipadTex, roughness: 0.9 }));
     pad.rotation.x = -Math.PI / 2; pad.position.set(PAD.x, 0.02, PAD.z); pad.receiveShadow = true; scene.add(pad);
@@ -407,17 +555,17 @@
   }
   function barrier(x, z, alongX) {
     const w = alongX ? 3 : 0.8, d = alongX ? 0.8 : 3;
-    addOb(x, z, w, d, 1.4, new THREE.Mesh(roundBox(w, 1.4, d, 0.07, 2), stdMat('bar', { map: barrierTex, normalMap: concreteN, normalScale: new THREE.Vector2(0.6, 0.6), roughness: 0.9 })));
+    addOb(x, z, w, d, 1.4, new THREE.Mesh(roundBox(w, 1.4, d, 0.07, 2), stdMat('bar', { map: barrierTex, normalMap: photoNormal('concrete', 2, 1, concreteN), normalScale: new THREE.Vector2(0.8, 0.8), roughness: 0.9 })));
   }
   const barrelGeo = new THREE.CylinderGeometry(0.45, 0.45, 1.25, 16);
   function barrel(x, z) {
-    const o = addOb(x, z, 0.9, 0.9, 1.25, new THREE.Mesh(barrelGeo, stdMat('barrel', { map: barrelTex, roughness: 0.5, metalness: 0.3 })), 'barrel');
+    const o = addOb(x, z, 0.9, 0.9, 1.25, new THREE.Mesh(barrelGeo, stdMat('barrel', { map: barrelTex, normalMap: photoNormal('barrel', 2, 1), roughness: 0.55, metalness: 0.45 })), 'barrel');
     o.hp = 3;
     return o;
   }
   // 外墙 + 角上的瞭望塔
   {
-    const wallMat = new THREE.MeshStandardMaterial({ map: (() => { const t = concreteTex.clone(); t.needsUpdate = true; t.repeat.set(24, 1); return t; })(), normalMap: (() => { const t = concreteN.clone(); t.needsUpdate = true; t.repeat.set(24, 1); return t; })(), roughness: 0.95 });
+    const wallMat = new THREE.MeshStandardMaterial({ map: (() => { const t = concreteTex.clone(); t.needsUpdate = true; t.repeat.set(24, 1); return t; })(), normalMap: photoNormal('wall', 24, 1) || (() => { const t = concreteN.clone(); t.needsUpdate = true; t.repeat.set(24, 1); return t; })(), normalScale: new THREE.Vector2(1.2, 1.2), roughness: 0.95 });
     for (const [x, z, w, d] of [[0, -HALF - 0.5, 2 * HALF + 2, 1], [0, HALF + 0.5, 2 * HALF + 2, 1], [-HALF - 0.5, 0, 1, 2 * HALF + 2], [HALF + 0.5, 0, 1, 2 * HALF + 2]]) {
       addOb(x, z, w, d, 4, new THREE.Mesh(new THREE.BoxGeometry(w, 4, d), wallMat), 'wall');
     }
@@ -456,7 +604,9 @@
   const BARREL_SPOTS = [[9, 10.2], [-8, 16.2], [-20, -11.8], [22, -8.4], [1.4, -21.6], [13, -30.2], [-28, 18.2], [30, 6], [-4, -12], [17.4, 22], [-36, -6], [36, 12]];
   // 油罐（第二关的“油库”）
   {
-    const tankMat = stdMat('tank', { color: 0xd9d4c7, roughness: 0.5, metalness: 0.4 });
+    const tankMat = hasPhoto('metal')
+      ? stdMat('tank', { map: (() => { const t = photoMap('metal', 3, 1); return t; })(), normalMap: photoNormal('metal', 3, 1), color: 0xbfc4b0, roughness: 0.55, metalness: 0.5 })
+      : stdMat('tank', { color: 0xd9d4c7, roughness: 0.5, metalness: 0.4 });
     for (const [x, z] of [[-37, -14], [-37, -20.5]]) {
       const g = new THREE.Group();
       const body = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2.6, 4.2, 24), tankMat); body.position.y = 2.1; g.add(body);
@@ -546,7 +696,9 @@
       const a = Math.random() * Math.PI * 2, r = rand(49, 150), x = Math.cos(a) * r, z = Math.sin(a) * r;
       rocks.push([x, z, rand(0.4, 1) ** 2 * (r > 90 ? 4 : 2.2) + 0.3]);
     }
-    const rockMat = new THREE.MeshStandardMaterial({ color: 0xa3896a, roughness: 0.95, normalMap: concreteN, normalScale: new THREE.Vector2(1.2, 1.2) });
+    const rockMat = hasPhoto('rock')
+      ? new THREE.MeshStandardMaterial({ map: photoMap('rock', 0.5, 0.5), normalMap: photoNormal('rock', 0.5, 0.5), color: 0xd8c8b0, roughness: 0.95, normalScale: new THREE.Vector2(1.5, 1.5) })
+      : new THREE.MeshStandardMaterial({ color: 0xa3896a, roughness: 0.95, normalMap: concreteN, normalScale: new THREE.Vector2(1.2, 1.2) });
     const rockIM = new THREE.InstancedMesh(rockGeo, rockMat, rocks.length);
     const col = new THREE.Color();
     rocks.forEach(([x, z, s], i) => {
@@ -816,24 +968,52 @@
     pGeo.attributes.color.needsUpdate = true;
   }
 
-  // 烟雾（普通混合，灰色的）
+  // 烟雾（普通混合）：真实一点的云团纹理，会慢慢转、慢慢变大、越飘越慢
   const smokes = [];
-  for (let i = 0; i < 90; i++) {
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0x8a8273, transparent: true, depthWrite: false, opacity: 0 }));
+  for (let i = 0; i < 150; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTexs[i % 4], color: 0x8a8273, transparent: true, depthWrite: false, opacity: 0, fog: true }));
     s.visible = false; scene.add(s);
-    smokes.push({ s, life: 0, max: 1, size: 1, vel: new THREE.Vector3(), op: 0.6 });
+    smokes.push({ s, life: 0, max: 1, size: 1, vel: new THREE.Vector3(), op: 0.6, spin: 0, grow: 1.2, drag: 1 });
   }
   let smokeIdx = 0;
+  function nextSmoke() { const p = smokes[smokeIdx]; smokeIdx = (smokeIdx + 1) % smokes.length; return p; }
   function puff(pos, n, size, color, life, spread) {
     for (let k = 0; k < n; k++) {
-      const p = smokes[smokeIdx]; smokeIdx = (smokeIdx + 1) % smokes.length;
+      const p = nextSmoke();
       const sp = spread == null ? size * 0.4 : spread;
       p.s.position.set(pos.x + rand(-sp, sp), pos.y + rand(-sp, sp) * 0.5, pos.z + rand(-sp, sp));
       p.s.material.color.set(color || 0x8a8273);
       p.vel.set(rand(-0.6, 0.6), rand(0.6, 1.6), rand(-0.6, 0.6));
       p.life = p.max = (life || 1.6) * rand(0.7, 1.2);
       p.size = size * rand(0.7, 1.2);
-      p.op = color === 0xffffff ? 0.75 : 0.6;
+      p.op = color === 0xffffff ? 0.7 : 0.6;
+      p.s.material.rotation = Math.random() * 6.28; p.spin = rand(-0.6, 0.6); p.grow = 1.2; p.drag = 1;
+      p.s.visible = true;
+    }
+  }
+  // 爆炸后的黑烟柱：大团、很久才散、一边往上飘一边被风吹斜
+  function smokeColumn(pos, size, n) {
+    for (let k = 0; k < n; k++) {
+      const p = nextSmoke();
+      p.s.position.set(pos.x + rand(-0.6, 0.6) * size, Math.max(0.5, pos.y) + rand(0, 1) * size, pos.z + rand(-0.6, 0.6) * size);
+      const c = rand(0.22, 0.36); p.s.material.color.setRGB(c * 1.05, c, c * 0.9);
+      p.vel.set(rand(-0.5, 0.5) + 0.5, rand(1.5, 3.5) * Math.sqrt(size), rand(-0.5, 0.5) + 0.25);
+      p.life = p.max = rand(3.2, 5.5) * Math.min(1.6, 0.7 + size * 0.3);
+      p.size = rand(1.8, 3) * Math.sqrt(size);
+      p.op = 0.82; p.s.material.rotation = Math.random() * 6.28; p.spin = rand(-0.3, 0.3); p.grow = 2.2; p.drag = 0.45;
+      p.s.visible = true;
+    }
+  }
+  // 地面扬起的一圈沙尘
+  function dustRing(pos, size, n) {
+    for (let k = 0; k < n; k++) {
+      const p = nextSmoke(), a = k / n * Math.PI * 2 + rand(-0.2, 0.2), sp = rand(5, 9) * Math.sqrt(size);
+      p.s.position.set(pos.x + Math.cos(a) * 0.5, 0.4 + Math.random() * 0.3, pos.z + Math.sin(a) * 0.5);
+      p.s.material.color.set(0xb89c74);
+      p.vel.set(Math.cos(a) * sp, rand(0.3, 1.2), Math.sin(a) * sp);
+      p.life = p.max = rand(1.4, 2.4);
+      p.size = rand(1.4, 2.2) * Math.sqrt(size);
+      p.op = 0.65; p.s.material.rotation = Math.random() * 6.28; p.spin = rand(-0.5, 0.5); p.grow = 1.6; p.drag = 2.6;
       p.s.visible = true;
     }
   }
@@ -843,9 +1023,52 @@
       p.life -= dt;
       if (p.life <= 0) { p.s.visible = false; continue; }
       const t = 1 - p.life / p.max;
+      p.vel.multiplyScalar(Math.max(0, 1 - p.drag * dt));
       p.s.position.addScaledVector(p.vel, dt);
-      p.s.scale.setScalar(p.size * (0.5 + t * 1.2));
-      p.s.material.opacity = p.op * Math.min(1, t * 6) * (1 - t);
+      p.s.material.rotation += p.spin * dt;
+      p.s.scale.setScalar(p.size * (0.5 + (1 - Math.pow(1 - t, 2)) * p.grow));
+      p.s.material.opacity = p.op * Math.min(1, t * 6) * (1 - t) * (1 - t * 0.3);
+    }
+  }
+  // 火球：叠加混合、亮度超过 1，泛光会让它发光；颜色从白黄慢慢变成暗红再消失
+  const fires = [];
+  for (let i = 0; i < 48; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: fireTexs[i % 2], color: 0xffffff, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, toneMapped: false, fog: false }));
+    s.visible = false; scene.add(s);
+    fires.push({ s, life: 0, max: 1, size: 1, vel: new THREE.Vector3(), delay: 0 });
+  }
+  let fireIdx = 0;
+  function fireball(pos, size) {
+    const n = Math.min(14, 5 + Math.round(size * 4));
+    for (let k = 0; k < n; k++) {
+      const f = fires[fireIdx]; fireIdx = (fireIdx + 1) % fires.length;
+      const r = size * 0.55;
+      f.s.position.set(pos.x + rand(-r, r), Math.max(0.4, pos.y + rand(-0.2, 1) * r), pos.z + rand(-r, r));
+      f.vel.set(rand(-1, 1), rand(0.5, 2.2), rand(-1, 1)).multiplyScalar(2.2 * Math.sqrt(size));
+      f.life = f.max = rand(0.35, 0.75) * (0.8 + size * 0.15);
+      f.size = rand(1.2, 2.1) * Math.sqrt(size) * 1.3;
+      f.delay = k < 3 ? 0 : rand(0, 0.08);
+      f.s.material.rotation = Math.random() * 6.28;
+      f.s.visible = false;
+    }
+  }
+  const fireCol = new THREE.Color();
+  function updateFires(dt) {
+    for (const f of fires) {
+      if (f.life <= 0) continue;
+      if (f.delay > 0) { f.delay -= dt; continue; }
+      f.life -= dt;
+      if (f.life <= 0) { f.s.visible = false; continue; }
+      f.s.visible = true;
+      const t = 1 - f.life / f.max;
+      f.vel.multiplyScalar(Math.max(0, 1 - 3 * dt));
+      f.s.position.addScaledVector(f.vel, dt);
+      f.s.scale.setScalar(f.size * (0.45 + 0.8 * (1 - Math.pow(1 - t, 3))));
+      // 白热 → 橙 → 暗红
+      if (t < 0.2) fireCol.setRGB(3, 2, 0.9).lerp(tmpC.setRGB(2.6, 0.95, 0.22), t / 0.2);
+      else fireCol.setRGB(2.6, 0.95, 0.22).lerp(tmpC.setRGB(0.45, 0.08, 0.02), (t - 0.2) / 0.8);
+      f.s.material.color.copy(fireCol);
+      f.s.material.opacity = Math.min(1, (1 - t) * 1.6);
     }
   }
 
@@ -968,18 +1191,20 @@
 
   let shake = 0, flashLightT = 0;
   function explode(pos, size, silent) {
-    emit(pos, 0xff7a1a, Math.round(26 * size), 9 * Math.sqrt(size), 0.8, 3);
-    emit(pos, 0xffd23f, Math.round(14 * size), 7 * Math.sqrt(size), 0.6, 2);
-    emit(pos, 0xffffff, Math.round(6 * size), 5 * Math.sqrt(size), 0.35, 1);
-    if (pos.y < 2) spawnRing(pos, 0xff9a3a, 3 * size, 0.45 + size * 0.1);
-    spawnFlash(pos, 0xffb347, 5 * size, 0.3 + size * 0.05);
-    puff(tmpV.copy(pos).setY(Math.max(0.6, pos.y)), Math.min(10, 3 + Math.round(size * 2)), 2.5 * Math.sqrt(size), 0x6f675a, 2.2, size * 0.8);
-    spawnShards(pos, 0x5a4a3a, Math.min(14, 3 + Math.round(size * 3)), size);
+    fireball(pos, size);
+    // 火花：飞得远、落得慢
+    emit(pos, 0xffb04a, Math.round(22 * size), 13 * Math.sqrt(size), 1.1, 4);
+    emit(pos, 0xffe3a0, Math.round(8 * size), 8 * Math.sqrt(size), 0.4, 2);
+    spawnFlash(pos, 0xff9040, 4 * size, 0.12 + size * 0.03);
+    if (pos.y < 2) dustRing(pos, size, Math.min(14, 6 + Math.round(size * 3)));
+    smokeColumn(pos, size, Math.min(12, 4 + Math.round(size * 3)));
+    spawnShards(pos, 0x5a4a3a, Math.min(16, 4 + Math.round(size * 3)), size);
+    if (pos.y < 2 && size >= 1.5) addScorch(pos);
     flashLight.position.copy(pos).setY(pos.y + 1);
-    flashLight.intensity = 60 * size; flashLightT = 0.2;
+    flashLight.intensity = 80 * size; flashLightT = 0.25;
     const d = camera.position.distanceTo(pos);
     shake = Math.max(shake, Math.min(1.2, size * 2.5 / (d + 3)));
-    if (!silent) Sfx.boom(size >= 2.2);
+    if (!silent) Sfx.boom(size >= 2.2, d);
   }
 
   // 飘字
@@ -1080,9 +1305,17 @@
   gunRoot.scale.setScalar(GS);
   gunScene.add(gunRoot);
   gunModels.forEach(m => { m.g.visible = false; gunRoot.add(m.g); });
-  const muzzleFlash = glowSprite(0xffc060, 0.35, 1);
+  // 枪口火焰：一团光晕 + 正面的星形火花 + 两片交叉的侧面火舌
+  const muzzleFlash = new THREE.Group();
   muzzleFlash.visible = false;
   gunRoot.add(muzzleFlash);
+  const mfGlow = glowSprite(0xffb050, 0.5, 0.9); muzzleFlash.add(mfGlow);
+  const mfStar = new THREE.Sprite(new THREE.SpriteMaterial({ map: flashStarTex, color: new THREE.Color(2.2, 1.8, 1.4), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false }));
+  muzzleFlash.add(mfStar);
+  const mfSideMat = new THREE.MeshBasicMaterial({ map: flashSideTex, color: new THREE.Color(2, 1.6, 1.2), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, side: THREE.DoubleSide, toneMapped: false });
+  const mfSideGeo = new THREE.PlaneGeometry(0.16, 0.5); mfSideGeo.translate(0, 0.25, 0); mfSideGeo.rotateX(-Math.PI / 2);
+  const mfSides = new THREE.Group(); muzzleFlash.add(mfSides);
+  for (let i = 0; i < 2; i++) { const m = new THREE.Mesh(mfSideGeo, mfSideMat); m.rotation.z = i * Math.PI / 2; mfSides.add(m); }
 
   // ================= 士兵模型 =================
   const SG = {
@@ -1357,7 +1590,7 @@
     b.mesh.lookAt(tmpV.copy(from).add(b.vel));
     b.mesh.scale.setScalar(big ? 2.2 : 1);
     b.life = 4; b.dmg = dmg;
-    Sfx.enemyShot();
+    Sfx.enemyShot(camera.position.distanceTo(from));
   }
 
   // ---------- 道具 ----------
@@ -1541,11 +1774,9 @@
   function rocketBlast(p, gren) {
     const W = WEAPONS[gren ? GL : RK];
     explode(p, gren ? 2.4 : 3.2);
-    spawnRing(p, 0xffd23f, gren ? 7 : 9, 0.6);
-    emit(p, 0xffd23f, gren ? 40 : 60, 15, 1, 6);
+    emit(p, 0xffc060, gren ? 20 : 30, 15, 1.2, 6);
     shake = Math.max(shake, gren ? 0.7 : 1.1);
     blastDamage(p, W.blast, W.dmg * S.dmg);
-    addScorch(p);
   }
   function updateRockets(dt) {
     for (const r of rockets) {
@@ -1617,6 +1848,7 @@
     camera.getWorldDirection(aim);
     const from = muzzleWorld(new THREE.Vector3());
     flashLight.position.copy(from); flashLight.intensity = W.rocket ? 30 : 12; flashLightT = 0.05;
+    if (!W.rocket && !W.launcher && Math.random() < 0.6) puff(from, 1, W.pellets > 1 ? 0.5 : 0.3, 0xd8d2c4, 0.9, 0.02);
     const moving = Math.hypot(player.vel.x, player.vel.z) > 2 || !player.onGround;
     // 移动、跳起来、连续开火都会让子弹散得更开；蹲下更稳
     const spread = lerp(W.spread, W.adsSpread, aimT) * (moving ? 1.6 : 1) * (1 + heat * lerp(1.3, 0.5, aimT)) * (crouch ? 0.7 : 1);
@@ -2993,8 +3225,14 @@
     muzzleFlash.visible = muzzleT > 0 && !W.scope;
     if (muzzleFlash.visible) {
       muzzleFlash.position.copy(gm.muzzle);
-      muzzleFlash.material.rotation = Math.random() * 6;
-      muzzleFlash.scale.setScalar(W.rocket ? 1.1 : W.pellets > 1 ? 0.8 : W.id === 'pistol' ? 0.4 : 0.55);
+      const k = W.rocket ? 1.6 : W.pellets > 1 ? 1.25 : W.id === 'pistol' ? 0.6 : W.id === 'smg' ? 0.75 : 1;
+      muzzleFlash.scale.setScalar(k * rand(0.85, 1.15));
+      mfStar.material.rotation = Math.random() * 6.28;
+      mfStar.scale.setScalar(rand(0.28, 0.4));
+      mfSides.rotation.z = Math.random() * 6.28;
+      mfSides.scale.set(1, 1, rand(0.6, 1.3));
+      // 瞄准的时候正面火花小一点，不挡视线
+      mfStar.material.opacity = aimT > 0.5 ? 0.45 : 1;
     }
     gunFlashLight.intensity = muzzleT > 0 ? 3 : 0;
     updateShells(dt);
@@ -3064,7 +3302,7 @@
         spawnFlash(from, 0xffc060, 0.5, 0.06);
         emit(tp, 0xffe15a, 4, 4, 0.25, 1);
         damageEnemy(target, 0.8 * S.dmg, null, false, false);
-        Sfx.shoot();
+        Sfx.shoot(camera.position.distanceTo(from));
       }
     }
   }
@@ -3520,6 +3758,7 @@
     if (active || state === 'title') {
       updateParticles(dt);
       updateSmoke(dt);
+      updateFires(dt);
       updateShards(dt);
       updateRings(dt);
       updateFlashes(dt);
@@ -3592,6 +3831,9 @@
     look(yaw, pitch) { player.yaw = yaw; player.pitch = pitch; },
     hold(code, on) { keys[code] = on; },
     crouch(on) { crouch = on; },
+    boom(x, y, z, sz) { explode(new THREE.Vector3(x, y, z), sz || 2.4, true); },
+    muzzle(t) { muzzleT = t; },
+    fxStep(dt, n) { for (let i = 0; i < (n || 1); i++) { updateParticles(dt); updateSmoke(dt); updateFires(dt); updateShards(dt); updateFlashes(dt); } },
   };
 
   toTitle();

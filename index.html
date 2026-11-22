@@ -210,6 +210,21 @@
 <script src="js/soldier.js"></script>
 <script src="js/fx.js"></script>
 <script src="js/guns.js"></script>
-<script src="js/game.js"></script>
+<script src="js/photos.js"></script>
+<script>
+  // 先把真实照片材质解码好，再启动游戏
+  (function () {
+    var P = window.PHOTOS || {}, keys = Object.keys(P), left = keys.length;
+    window.PHOTO_IMG = {};
+    function go() { var s = document.createElement('script'); s.src = 'js/game.js'; document.body.appendChild(s); }
+    if (!left) return go();
+    keys.forEach(function (k) {
+      var im = new Image();
+      im.onload = im.onerror = function () { if (--left === 0) go(); };
+      im.src = P[k];
+      window.PHOTO_IMG[k] = im;
+    });
+  })();
+</script>
 </body>
 </html>
