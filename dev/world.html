@@ -1,0 +1,58 @@
+<!doctype html><html><head><meta charset="utf-8"><title>world test</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#000}#info{position:fixed;left:8px;top:8px;color:#fff;font:12px monospace;z-index:9}</style></head>
+<body><div id="info">loading</div>
+<script src="../lib/three.min.js"></script>
+<script src="../lib/GLTFLoader.js"></script>
+<script src="../js/fx.js"></script>
+<script src="../js/world/noise.js"></script>
+<script src="../js/world/assets.js"></script>
+<script src="../js/world/physics.js"></script>
+<script src="../js/world/terrain.js"></script>
+<script src="../js/world/sky.js"></script>
+<script src="../js/world/flora.js"></script>
+<script src="../js/world/maps.js"></script>
+<script src="../js/world/build.js"></script>
+<script src="../js/world/world.js"></script>
+<script>
+(async function(){
+  const q = new URLSearchParams(location.search);
+  const info = document.getElementById('info');
+  const t0 = performance.now();
+  window.TS_ASSET_BASE = '../';
+  const renderer = new THREE.WebGLRenderer({antialias:false, powerPreference:'high-performance'});
+  renderer.setPixelRatio(1); renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 7000);
+  const W = await TSWorld.load(renderer, scene, q.get('map')||'valley', {sky: q.get('sky')||'day', quality: q.get('tq')||'high', onStep:(m)=>{info.textContent=m+' '+Math.round(performance.now()-t0);}});
+  const sky = W.sky, terrain = W.terrain;
+  const sun = new THREE.DirectionalLight(sky.sunColor, sky.sunIntensity);
+  sun.castShadow = true; sun.shadow.mapSize.set(2048,2048);
+  scene.add(sun, sun.target);
+  const sc = sun.shadow.camera; sc.left=-70; sc.right=70; sc.top=70; sc.bottom=-70; sc.near=1; sc.far=600; sun.shadow.bias=-0.0004; sun.shadow.normalBias=0.05;
+  const fx = FX.create(renderer, {sun, sunDir: sky.sunDir.clone(), isTouch:false});
+  fx.setAtmos({fogColor: sky.fogColor, sunColor: sky.sunColor, fog: sky.P.fog, fall: 0.006, exposure: sky.exposure});
+  let cx = +(q.get('x')||0), cz = +(q.get('z')||480);
+  const sp = q.get('spot'); if (sp) { const a = sp.split('.').reduce((o,k)=>o[k], W.spots); cx = a.x; cz = a.z; }
+  const yaw = +(q.get('yaw')||0), pitch=+(q.get('pitch')||-0.05);
+  camera.position.set(cx, terrain.heightAt(cx,cz)+ +(q.get('h')||1.7), cz);
+  camera.rotation.order='YXZ'; camera.rotation.set(pitch, yaw, 0);
+  W.warm(cx, cz);
+  W.update(camera, 0);
+  info.textContent = 'total '+Math.round(performance.now()-t0)+'ms';
+  let frames=0;
+  function frame(){
+    const p = camera.position;
+    const texel = 140/fx.shadowSize();
+    const fx0=Math.round(p.x/texel)*texel, fz0=Math.round(p.z/texel)*texel, fy=terrain.heightAt(p.x,p.z);
+    sun.position.set(fx0+sky.lightDir.x*300, fy+sky.lightDir.y*300, fz0+sky.lightDir.z*300); sun.target.position.set(fx0,fy,fz0);
+    W.update(camera, performance.now()/1000);
+    fx.render(scene, camera, 1/60);
+    frames++; window.__frames = frames;
+    if (!q.get('once')) requestAnimationFrame(frame);
+  }
+  frame();
+  window.__ready = true;
+  window.__cam = camera; window.__terrain = terrain; window.__sky = sky; window.__fx = fx; window.__scene=scene;
+})().catch(e=>{document.getElementById('info').textContent='ERR '+e.stack; console.error(e);});
+</script></body></html>
