@@ -1,8 +1,8 @@
 // 声音：全部用 WebAudio 实时合成，不需要任何音频文件。
 window.Sfx = (function () {
-  let ctx = null, master = null, musicGain = null, noiseBuf = null;
+  let ctx = null, master = null, musicGain = null, noiseBuf = null, revIn = null;
   let soundOn = true, musicOn = true;
-  let lastShot = 0, musicTimer = null, step = 0, nextNoteTime = 0;
+  let lastShot = 0, lastEnemy = 0, musicTimer = null, step = 0, nextNoteTime = 0;
 
   try {
     soundOn = localStorage.getItem('tri_sound') !== 'off';
@@ -16,7 +16,18 @@ window.Sfx = (function () {
     ctx = new AC();
     master = ctx.createGain();
     master.gain.value = soundOn ? 0.55 : 0;
-    master.connect(ctx.destination);
+    // 压缩器：很多声音叠在一起也不会爆音
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -12; comp.knee.value = 8; comp.ratio.value = 5; comp.attack.value = 0.002; comp.release.value = 0.2;
+    master.connect(comp); comp.connect(ctx.destination);
+    // 混响：模拟野外山谷的回声（开枪后“嘭——”的尾音）
+    try {
+      const rev = ctx.createConvolver();
+      rev.buffer = makeIR(2.6);
+      revIn = ctx.createGain(); revIn.gain.value = 1;
+      const revOut = ctx.createGain(); revOut.gain.value = 0.7;
+      revIn.connect(rev); rev.connect(revOut); revOut.connect(master);
+    } catch (e) { revIn = null; }
     musicGain = ctx.createGain();
     musicGain.gain.value = musicOn ? 0.18 : 0;
     musicGain.connect(master);
@@ -24,6 +35,68 @@ window.Sfx = (function () {
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     startMusic();
+  }
+
+  // 生成一段“脉冲响应”：几次远处山坡的回声 + 慢慢变暗、变小的混响尾巴
+  function makeIR(sec) {
+    const sr = ctx.sampleRate, len = Math.floor(sr * sec), buf = ctx.createBuffer(2, len, sr);
+    const echoes = [[0.07, 0.35], [0.16, 0.22], [0.38, 0.28], [0.61, 0.14], [0.95, 0.08]];
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buf.getChannelData(ch);
+      let lp = 0;
+      for (let i = 0; i < len; i++) {
+        const t = i / len;
+        const k = 0.5 - t * 0.45; // 越往后越闷
+        lp += k * ((Math.random() * 2 - 1) - lp);
+        d[i] = lp * Math.pow(1 - t, 3.2) * 0.5 * Math.min(1, i / (sr * 0.02));
+      }
+      for (const [at, g] of echoes) {
+        const st = Math.floor((at + (ch ? 0.013 : 0)) * sr), w = Math.floor(sr * 0.05);
+        let e = 0;
+        for (let i = 0; i < w && st + i < len; i++) { e += 0.25 * ((Math.random() * 2 - 1) - e); d[st + i] += e * g * 2.2 * Math.pow(1 - i / w, 2); }
+      }
+    }
+    return buf;
+  }
+  // 一段过滤过的噪声
+  function nz(t, dur, vol, type, f, dest, fEnd, q) {
+    const s = ctx.createBufferSource();
+    s.buffer = noiseBuf;
+    const fl = ctx.createBiquadFilter();
+    fl.type = type; fl.frequency.setValueAtTime(f, t);
+    if (q) fl.Q.value = q;
+    if (fEnd) fl.frequency.exponentialRampToValueAtTime(fEnd, t + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(fl); fl.connect(g); g.connect(dest);
+    s.start(t, Math.random() * 1.2); s.stop(t + dur + 0.05);
+  }
+  // 真实一点的枪声：尖锐的“啪”(超音速爆音) + 火药的“砰” + 低沉的冲击 + 回声；
+  // 离得越远越小声、越闷、回声占比越大，还会晚一点点传过来
+  const GUN = {
+    pistol: { crack: 0.5, body: 0.55, bf: 3800, thump: 0.35, tf: 190, dur: 0.16, rev: 0.35 },
+    smg: { crack: 0.38, body: 0.45, bf: 4800, thump: 0.25, tf: 210, dur: 0.11, rev: 0.25 },
+    rifle: { crack: 0.65, body: 0.65, bf: 3300, thump: 0.5, tf: 140, dur: 0.2, rev: 0.42 },
+    shotgun: { crack: 0.45, body: 0.95, bf: 2300, thump: 0.85, tf: 95, dur: 0.38, rev: 0.55 },
+    dmr: { crack: 0.85, body: 0.75, bf: 3100, thump: 0.6, tf: 120, dur: 0.3, rev: 0.6 },
+    sniper: { crack: 1, body: 0.85, bf: 2900, thump: 0.85, tf: 88, dur: 0.48, rev: 0.85 },
+    lmg: { crack: 0.62, body: 0.62, bf: 3000, thump: 0.55, tf: 128, dur: 0.18, rev: 0.42 },
+  };
+  function gun(p, dist, vol) {
+    if (!ctx) return;
+    const far = Math.min(1, (dist || 0) / 70);
+    const t = ctx.currentTime + (dist || 0) / 900;
+    const out = ctx.createGain(); out.gain.value = (vol || 1) * (1 - far * 0.85);
+    let dest = out;
+    if (far > 0.02) { const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 12000 * Math.pow(0.1, far); lp.connect(out); dest = lp; }
+    out.connect(master);
+    if (revIn) { const send = ctx.createGain(); send.gain.value = p.rev * (0.7 + far * 2.2); out.connect(send); send.connect(revIn); }
+    nz(t, 0.035, p.crack, 'highpass', 2600, dest);
+    nz(t, 0.02, p.crack * 0.6, 'bandpass', 1800, dest, null, 0.8);
+    nz(t, p.dur, p.body, 'lowpass', p.bf, dest, 150);
+    tone(p.tf, p.dur * 0.9, 'sine', p.thump, 36, t, dest);
+    tone(p.tf * 0.5, p.dur * 1.3, 'sine', p.thump * 0.5, 28, t, dest);
   }
 
   function tone(freq, dur, type, vol, slideTo, when, dest) {
@@ -102,17 +175,29 @@ window.Sfx = (function () {
       try { localStorage.setItem('tri_music', on ? 'on' : 'off'); } catch (e) {}
       if (musicGain) musicGain.gain.value = on ? 0.18 : 0;
     },
-    shoot() {
+    // 队友开枪：远一点的步枪声
+    shoot(dist) {
       if (!ctx) return;
       const now = ctx.currentTime;
       if (now - lastShot < 0.06) return; // 部队很多时避免太吵
       lastShot = now;
-      tone(900 + Math.random() * 300, 0.08, 'square', 0.05, 300);
+      gun(GUN.rifle, dist == null ? 15 : dist, 0.6);
     },
     hit() { tone(220, 0.06, 'triangle', 0.12, 120); },
-    boom(big) {
-      noise(big ? 1.2 : 0.4, big ? 0.9 : 0.35, big ? 2000 : 1400);
-      tone(big ? 90 : 140, big ? 0.8 : 0.3, 'sine', big ? 0.6 : 0.3, 30);
+    // 爆炸：开头一声炸响 + 很长的低沉轰鸣 + 山谷回声；远了会变闷、变晚
+    boom(big, dist) {
+      if (!ctx) return;
+      const d = dist || 0, far = Math.min(1, d / 90), t = ctx.currentTime + d / 900;
+      const out = ctx.createGain(); out.gain.value = 1 - far * 0.7;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 9000 * Math.pow(0.08, far); lp.connect(out);
+      out.connect(master);
+      if (revIn) { const send = ctx.createGain(); send.gain.value = big ? 1.1 : 0.7; out.connect(send); send.connect(revIn); }
+      nz(t, 0.08, big ? 0.9 : 0.5, 'highpass', 1500, lp);
+      nz(t, big ? 1.6 : 0.7, big ? 1 : 0.55, 'lowpass', big ? 2200 : 1600, lp, 60);
+      tone(big ? 75 : 110, big ? 1.4 : 0.5, 'sine', big ? 0.9 : 0.45, 22, t, lp);
+      tone(big ? 45 : 70, big ? 1.8 : 0.7, 'sine', big ? 0.6 : 0.3, 18, t, lp);
+      // 碎片噼里啪啦落地
+      if (big) for (let i = 0; i < 6; i++) nz(t + 0.3 + Math.random() * 0.9, 0.04, 0.08, 'bandpass', 2500 + Math.random() * 2000, lp, null, 2);
     },
     pickup() { tone(660, 0.1, 'sine', 0.25, 1320); },
     gem() { tone(1200 + Math.random() * 400, 0.06, 'sine', 0.08); },
@@ -155,14 +240,20 @@ window.Sfx = (function () {
       tone(1300, 0.09, 'sawtooth', 0.09, 220);
       noise(0.06, 0.12, 5000);
     },
-    enemyShot() { tone(500, 0.12, 'square', 0.05, 250); },
-    rifle() { noise(0.09, 0.4, 6500); tone(170, 0.07, 'square', 0.16, 70); },
-    shotgun() { noise(0.3, 0.7, 3500); tone(95, 0.25, 'sine', 0.45, 40); },
-    sniper() { noise(0.4, 0.8, 8000); tone(1100, 0.35, 'sine', 0.1, 180); tone(70, 0.4, 'sine', 0.4, 30); },
-    pistol() { noise(0.08, 0.38, 5000); tone(260, 0.06, 'square', 0.14, 90); },
-    smg() { noise(0.06, 0.3, 7000); tone(320, 0.04, 'square', 0.1, 120); },
-    dmr() { noise(0.25, 0.65, 7500); tone(140, 0.2, 'sine', 0.3, 45); },
-    lmg() { noise(0.1, 0.45, 5200); tone(130, 0.08, 'square', 0.18, 55); },
+    enemyShot(dist) {
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      if (now - lastEnemy < 0.05) return;
+      lastEnemy = now;
+      gun(GUN.rifle, dist == null ? 30 : dist, 0.55);
+    },
+    rifle() { gun(GUN.rifle); },
+    shotgun() { gun(GUN.shotgun); },
+    sniper() { gun(GUN.sniper); },
+    pistol() { gun(GUN.pistol); },
+    smg() { gun(GUN.smg); },
+    dmr() { gun(GUN.dmr); },
+    lmg() { gun(GUN.lmg); },
     launcher() { noise(0.18, 0.35, 900); tone(110, 0.2, 'sine', 0.45, 50); },
     draw() { if (!ctx) return; noise(0.08, 0.12, 4000); tone(900, 0.03, 'square', 0.06, null, ctx.currentTime + 0.12); },
     shellIn() { tone(1100, 0.03, 'square', 0.1); noise(0.04, 0.12, 3000); },
